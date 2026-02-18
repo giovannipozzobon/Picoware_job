@@ -1,6 +1,7 @@
 /*
  * Picoware Southbridge Native C Extension for MicroPython
  * Direct exposure of southbridge.h methods
+ * Copyright © 2025 JBlanked
  */
 
 #include "py/runtime.h"
@@ -11,6 +12,14 @@
 #ifndef STATIC
 #define STATIC static
 #endif
+
+// deinit() Deinitialize the southbridge
+STATIC mp_obj_t picoware_southbridge_deinit(void)
+{
+    sb_deinit();
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_southbridge_deinit_obj, picoware_southbridge_deinit);
 
 // init() - Initialize the southbridge
 STATIC mp_obj_t picoware_southbridge_init(void)
@@ -47,6 +56,22 @@ STATIC mp_obj_t picoware_southbridge_read_battery(void)
     return MP_OBJ_NEW_SMALL_INT(sb_read_battery());
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_southbridge_read_battery_obj, picoware_southbridge_read_battery);
+
+STATIC mp_obj_t picoware_southbridge_get_battery_percentage(void)
+{
+    int raw_level = sb_read_battery();
+    int battery_level = raw_level & 0x7F; // Mask out the charging bit
+    return MP_OBJ_NEW_SMALL_INT(battery_level);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_southbridge_get_battery_percentage_obj, picoware_southbridge_get_battery_percentage);
+
+STATIC mp_obj_t picoware_southbridge_is_battery_charging(void)
+{
+    int raw_level = sb_read_battery();
+    bool charging = (raw_level & 0x80) != 0; // Check if charging
+    return mp_obj_new_bool(charging);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_southbridge_is_battery_charging_obj, picoware_southbridge_is_battery_charging);
 
 // read_lcd_backlight() - Read LCD backlight brightness
 STATIC mp_obj_t picoware_southbridge_read_lcd_backlight(void)
@@ -107,11 +132,14 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(picoware_southbridge_reset_obj, picoware_southb
 STATIC const mp_rom_map_elem_t picoware_southbridge_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_picoware_southbridge)},
     // Functions
+    {MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&picoware_southbridge_deinit_obj)},
     {MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&picoware_southbridge_init_obj)},
     {MP_ROM_QSTR(MP_QSTR_available), MP_ROM_PTR(&picoware_southbridge_available_obj)},
     {MP_ROM_QSTR(MP_QSTR_read_keyboard), MP_ROM_PTR(&picoware_southbridge_read_keyboard_obj)},
     {MP_ROM_QSTR(MP_QSTR_read_keyboard_state), MP_ROM_PTR(&picoware_southbridge_read_keyboard_state_obj)},
     {MP_ROM_QSTR(MP_QSTR_read_battery), MP_ROM_PTR(&picoware_southbridge_read_battery_obj)},
+    {MP_ROM_QSTR(MP_QSTR_get_battery_percentage), MP_ROM_PTR(&picoware_southbridge_get_battery_percentage_obj)},
+    {MP_ROM_QSTR(MP_QSTR_is_battery_charging), MP_ROM_PTR(&picoware_southbridge_is_battery_charging_obj)},
     {MP_ROM_QSTR(MP_QSTR_read_lcd_backlight), MP_ROM_PTR(&picoware_southbridge_read_lcd_backlight_obj)},
     {MP_ROM_QSTR(MP_QSTR_write_lcd_backlight), MP_ROM_PTR(&picoware_southbridge_write_lcd_backlight_obj)},
     {MP_ROM_QSTR(MP_QSTR_read_keyboard_backlight), MP_ROM_PTR(&picoware_southbridge_read_keyboard_backlight_obj)},

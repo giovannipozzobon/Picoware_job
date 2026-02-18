@@ -26,7 +26,7 @@ def start(view_manager):
     from picoware.system.vector import Vector
     from time import sleep
 
-    draw = view_manager.get_draw()
+    draw = view_manager.draw
     draw.clear()
     draw.text(Vector(10, 10), "Example App")
     draw.swap()
@@ -45,7 +45,7 @@ def run(view_manager):
         BUTTON_RIGHT,
     )
     input_manager = view_manager.input_manager
-    button = input_manager.get_last_button()
+    button = input_manager.button
     if button == BUTTON_BACK:
         input_manager.reset() # reset to avoid multiple back presses
         view_manager.back()
@@ -291,7 +291,7 @@ draw = Draw()
 image = Image()
 
 # load from file
-if image.from_path("sd/desktop.bmp"):
+if image.from_path("desktop.bmp"):
     # draw the image
     draw.image_bytearray(Vector(0, 0), image.size, image._raw)
 
@@ -324,12 +324,14 @@ keyboard = Keyboard(
 
 # in the run loop, handle input and draw
 # if not keyboard.is_finished:
-#     keyboard.run()
+#     if not keyboard.run():
+#         input_manager.reset()
+#         view_manager.back()
 # else:
 #     view_manager.back()
 
 # get the entered text
-# response = keyboard.get_response()
+# response = keyboard.response
 
 # reset the keyboard for next use
 # keyboard.reset()

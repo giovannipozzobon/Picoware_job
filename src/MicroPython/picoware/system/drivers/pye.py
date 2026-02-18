@@ -3,8 +3,9 @@
 PYE_VERSION = " V2.78 "
 try:
     import usys as sys
-except:
+except ImportError:
     import sys
+
 import gc
 
 if sys.implementation.name == "micropython":
@@ -1172,12 +1173,10 @@ class Editor:
                             )
                             if not res or res[0].upper() != "Y":
                                 return
-                        except:
+                        except Exception:
                             pass
                 try:
-                    self.io_device.stopRefresh()  # hold core 1 functions
                     self.put_file(fname)  # put_file will handle SD path internally
-                    self.io_device.recoverRefresh()  # recover core 1 functions
                     self.fname = fname
                     old_hash = self.hash
                     self.hash = self.hash_buffer()
@@ -1185,7 +1184,6 @@ class Editor:
                     self.is_dir = False
                     self.message = f"File '{fname}' saved successfully"
                 except Exception as e:
-                    self.io_device.recoverRefresh()  # ensure refresh is recovered
                     self.message = f"Error saving file: {e}"
         elif key == KEY_UNDO:
             self.undo_redo(self.undo, self.redo)
@@ -1270,16 +1268,13 @@ class Editor:
                                 continue
 
                         try:
-                            self.io_device.stopRefresh()
                             self.put_file(fname)
-                            self.io_device.recoverRefresh()
                             self.fname = fname
                             self.hash = self.hash_buffer()
                             self.changed = ""
                             self.is_dir = False
                             self.message = f"File '{fname}' saved"
                         except Exception as e:
-                            self.io_device.recoverRefresh()
                             error_res = self.line_edit(
                                 f"Save failed: {e}. Quit anyway? (y/N): ", "N"
                             )
@@ -1436,7 +1431,7 @@ class Editor:
                     f.write("\n")
             try:
                 os.remove(fname)
-            except:
+            except Exception:
                 pass
             os.rename(tmpfile, fname)
 

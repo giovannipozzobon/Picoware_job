@@ -21,6 +21,15 @@
 #define BOARD_PICOCALC_PICO_2W 3
 #define BOARD_WAVESHARE_1_28_RP2350 4
 #define BOARD_WAVESHARE_1_43_RP2350 5
+#define BOARD_WAVESHARE_3_49_RP2350 6
+#define BOARD_PICOCALC_PIMORONI_2W 7
+
+#define BOARD_ID BOARD_WAVESHARE_1_28_RP2350
+
+#define BOARD_HAS_PSRAM 0 // no psram
+#define BOARD_HAS_SD 0    // no sd card
+#define BOARD_HAS_TOUCH 1 // has touch
+#define BOARD_HAS_WIFI 0  // no wifi
 
 STATIC mp_obj_t picoware_boards_get_current_display_size(void)
 {
@@ -33,12 +42,6 @@ STATIC mp_obj_t picoware_boards_get_current_display_size(void)
     return mp_obj_new_tuple(2, tuple);
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_boards_get_current_display_size_obj, picoware_boards_get_current_display_size);
-
-STATIC mp_obj_t picoware_boards_get_current_id(void)
-{
-    return mp_obj_new_int(BOARD_WAVESHARE_1_28_RP2350);
-}
-STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_boards_get_current_id_obj, picoware_boards_get_current_id);
 
 STATIC mp_obj_t picoware_boards_get_current_name(void)
 {
@@ -73,22 +76,28 @@ STATIC mp_obj_t picoware_boards_get_name(mp_obj_t board_id_obj)
     switch (board_id)
     {
     case BOARD_PICOCALC_PICO:
-        snprintf(board_name, sizeof(board_name), "PicCalc - Pico");
+        snprintf(board_name, sizeof(board_name), "PicoCalc - Pico");
         break;
     case BOARD_PICOCALC_PICOW:
-        snprintf(board_name, sizeof(board_name), "Picoware - Pico W");
+        snprintf(board_name, sizeof(board_name), "PicoCalc - Pico W");
         break;
     case BOARD_PICOCALC_PICO_2:
-        snprintf(board_name, sizeof(board_name), "PicCalc - Pico 2");
+        snprintf(board_name, sizeof(board_name), "PicoCalc - Pico 2");
         break;
     case BOARD_PICOCALC_PICO_2W:
-        snprintf(board_name, sizeof(board_name), "PicCalc - Pico 2 W");
+        snprintf(board_name, sizeof(board_name), "PicoCalc - Pico 2 W");
         break;
     case BOARD_WAVESHARE_1_28_RP2350:
         snprintf(board_name, sizeof(board_name), "Waveshare 1.28");
         break;
     case BOARD_WAVESHARE_1_43_RP2350:
         snprintf(board_name, sizeof(board_name), "Waveshare 1.43");
+        break;
+    case BOARD_WAVESHARE_3_49_RP2350:
+        snprintf(board_name, sizeof(board_name), "Waveshare 3.49");
+        break;
+    case BOARD_PICOCALC_PIMORONI_2W:
+        snprintf(board_name, sizeof(board_name), "PicoCalc - Pimoroni 2 W");
         break;
     default:
         snprintf(board_name, sizeof(board_name), "Unknown Board");
@@ -111,6 +120,7 @@ STATIC mp_obj_t picoware_boards_get_display_size(mp_obj_t board_id_obj)
     case BOARD_PICOCALC_PICOW:
     case BOARD_PICOCALC_PICO_2:
     case BOARD_PICOCALC_PICO_2W:
+    case BOARD_PICOCALC_PIMORONI_2W:
         width = 320;
         height = 320;
         break;
@@ -121,6 +131,10 @@ STATIC mp_obj_t picoware_boards_get_display_size(mp_obj_t board_id_obj)
     case BOARD_WAVESHARE_1_43_RP2350:
         width = 466;
         height = 466;
+        break;
+    case BOARD_WAVESHARE_3_49_RP2350:
+        width = 172;
+        height = 640;
         break;
     default:
         width = 0;
@@ -145,6 +159,7 @@ STATIC mp_obj_t picoware_boards_has_psram(mp_obj_t board_id_obj)
     case BOARD_PICOCALC_PICOW:
     case BOARD_PICOCALC_PICO_2:
     case BOARD_PICOCALC_PICO_2W:
+    case BOARD_PICOCALC_PIMORONI_2W:
         has_psram = true;
         break;
     default:
@@ -165,6 +180,7 @@ STATIC mp_obj_t picoware_boards_has_touch(mp_obj_t board_id_obj)
     {
     case BOARD_WAVESHARE_1_28_RP2350:
     case BOARD_WAVESHARE_1_43_RP2350:
+    case BOARD_WAVESHARE_3_49_RP2350:
         has_touch = true;
         break;
     default:
@@ -188,6 +204,8 @@ STATIC mp_obj_t picoware_boards_has_sd_card(mp_obj_t board_id_obj)
     case BOARD_PICOCALC_PICO_2:
     case BOARD_PICOCALC_PICO_2W:
     case BOARD_WAVESHARE_1_43_RP2350:
+    case BOARD_WAVESHARE_3_49_RP2350:
+    case BOARD_PICOCALC_PIMORONI_2W:
         has_sd_card = true;
         break;
     default:
@@ -208,6 +226,7 @@ STATIC mp_obj_t picoware_boards_has_wifi(mp_obj_t board_id_obj)
     {
     case BOARD_PICOCALC_PICOW:
     case BOARD_PICOCALC_PICO_2W:
+    case BOARD_PICOCALC_PIMORONI_2W:
         has_wifi = true;
         break;
     default:
@@ -242,7 +261,6 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(picoware_boards_is_circular_obj, picoware_board
 // Define module globals
 STATIC const mp_rom_map_elem_t picoware_boards_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_get_current_display_size), MP_ROM_PTR(&picoware_boards_get_current_display_size_obj)},
-    {MP_ROM_QSTR(MP_QSTR_get_current_id), MP_ROM_PTR(&picoware_boards_get_current_id_obj)},
     {MP_ROM_QSTR(MP_QSTR_get_current_name), MP_ROM_PTR(&picoware_boards_get_current_name_obj)},
     {MP_ROM_QSTR(MP_QSTR_get_device_name), MP_ROM_PTR(&picoware_boards_get_device_name_obj)},
     {MP_ROM_QSTR(MP_QSTR_get_name), MP_ROM_PTR(&picoware_boards_get_name_obj)},
@@ -252,6 +270,22 @@ STATIC const mp_rom_map_elem_t picoware_boards_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_has_touch), MP_ROM_PTR(&picoware_boards_has_touch_obj)},
     {MP_ROM_QSTR(MP_QSTR_has_wifi), MP_ROM_PTR(&picoware_boards_has_wifi_obj)},
     {MP_ROM_QSTR(MP_QSTR_is_circular), MP_ROM_PTR(&picoware_boards_is_circular_obj)},
+    //
+    {MP_ROM_QSTR(MP_QSTR_BOARD_PICOCALC_PICO), MP_ROM_INT(BOARD_PICOCALC_PICO)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_PICOCALC_PICOW), MP_ROM_INT(BOARD_PICOCALC_PICOW)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_PICOCALC_PICO_2), MP_ROM_INT(BOARD_PICOCALC_PICO_2)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_PICOCALC_PICO_2W), MP_ROM_INT(BOARD_PICOCALC_PICO_2W)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_WAVESHARE_1_28_RP2350), MP_ROM_INT(BOARD_WAVESHARE_1_28_RP2350)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_WAVESHARE_1_43_RP2350), MP_ROM_INT(BOARD_WAVESHARE_1_43_RP2350)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_WAVESHARE_3_49_RP2350), MP_ROM_INT(BOARD_WAVESHARE_3_49_RP2350)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_PICOCALC_PIMORONI_2W), MP_ROM_INT(BOARD_PICOCALC_PIMORONI_2W)},
+    //
+    {MP_ROM_QSTR(MP_QSTR_BOARD_ID), MP_ROM_INT(BOARD_ID)},
+    //
+    {MP_ROM_QSTR(MP_QSTR_BOARD_HAS_PSRAM), MP_ROM_INT(BOARD_HAS_PSRAM)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_HAS_SD), MP_ROM_INT(BOARD_HAS_SD)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_HAS_TOUCH), MP_ROM_INT(BOARD_HAS_TOUCH)},
+    {MP_ROM_QSTR(MP_QSTR_BOARD_HAS_WIFI), MP_ROM_INT(BOARD_HAS_WIFI)},
 };
 STATIC MP_DEFINE_CONST_DICT(picoware_boards_module_globals, picoware_boards_module_globals_table);
 

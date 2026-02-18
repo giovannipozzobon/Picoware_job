@@ -4,29 +4,35 @@ _wifi_index = 0
 
 def start(view_manager) -> bool:
     """Start the app"""
+
+    if not view_manager.has_wifi:
+        view_manager.alert("WiFi not available....")
+        return False
+
     from picoware.gui.menu import Menu
 
     # create wifi folder
-    view_manager.get_storage().mkdir("picoware/wifi")
+    view_manager.storage.mkdir("picoware/wifi")
 
     global _wifi
-    global _wifi_index
+
     if _wifi is None:
         _wifi = Menu(
             view_manager.draw,
             "WiFi",
             0,
             view_manager.draw.size.y,
-            view_manager.get_foreground_color(),
-            view_manager.get_background_color(),
-            view_manager.get_selected_color(),
-            view_manager.get_foreground_color(),
+            view_manager.foreground_color,
+            view_manager.background_color,
+            view_manager.selected_color,
+            view_manager.foreground_color,
             2,
         )
         _wifi.add_item("Connect")
         _wifi.add_item("Scan")
         _wifi.add_item("Server")
         _wifi.add_item("Settings")
+        _wifi.add_item("RSSI Monitor")
         _wifi.set_selected(_wifi_index)
 
         _wifi.draw()
@@ -45,13 +51,13 @@ def run(view_manager) -> None:
         BUTTON_RIGHT,
     )
 
-    global _wifi
     if not _wifi:
         return
+
     global _wifi_index
 
     input_manager = view_manager.input_manager
-    button: int = input_manager.get_last_button()
+    button: int = input_manager.button
 
     if button in (BUTTON_UP, BUTTON_LEFT):
         input_manager.reset()
@@ -65,7 +71,7 @@ def run(view_manager) -> None:
         view_manager.back()
     elif button == BUTTON_CENTER:
         input_manager.reset()
-        _wifi_index = _wifi.get_selected_index()
+        _wifi_index = _wifi.selected_index
 
         if _wifi_index == 0:
             from picoware.applications.wifi import connect
@@ -91,6 +97,18 @@ def run(view_manager) -> None:
                 View("wifi_settings", settings.run, settings.start, settings.stop)
             )
             view_manager.switch_to("wifi_settings")
+        elif _wifi_index == 4:
+            from picoware.applications.wifi import rssi_monitor
+
+            view_manager.add(
+                View(
+                    "wifi_rssi_monitor",
+                    rssi_monitor.run,
+                    rssi_monitor.start,
+                    rssi_monitor.stop,
+                )
+            )
+            view_manager.switch_to("wifi_rssi_monitor")
 
 
 def stop(view_manager) -> None:

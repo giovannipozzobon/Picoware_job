@@ -21,6 +21,18 @@ rm -rf "$micropython_dir"/modules/PicoCalc # delete entire PicoCalc directory
 # remove existing Waveshare modules directory if it exists
 rm -rf "$micropython_dir"/modules/Waveshare
 
+# remove auto complete module if it exists
+rm -rf "$micropython_dir"/modules/auto_complete
+
+# remove vector module if it exists
+rm -rf "$micropython_dir"/modules/vector
+
+# remove response module if it exists
+rm -rf "$micropython_dir"/modules/response
+
+# remove font module if it exists
+rm -rf "$micropython_dir"/modules/font
+
 # Clean previous builds
 echo "Cleaning previous builds..."
 cd "$micropython_dir"
@@ -42,6 +54,20 @@ cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_game "$micropython_dir"/
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_keyboard "$micropython_dir"/modules/PicoCalc/picoware_keyboard
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_lcd "$micropython_dir"/modules/PicoCalc/picoware_lcd
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_psram "$micropython_dir"/modules/PicoCalc/picoware_psram
+cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_sd "$micropython_dir"/modules/PicoCalc/picoware_sd
+cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_lvgl "$micropython_dir"/modules/PicoCalc/picoware_lvgl
+
+# copy auto complete module
+cp -r "$picoware_dir"/src/MicroPython/auto_complete "$micropython_dir"/modules/auto_complete
+
+# copy vector module
+cp -r "$picoware_dir"/src/MicroPython/vector "$micropython_dir"/modules/vector
+
+# copy response module
+cp -r "$picoware_dir"/src/MicroPython/response "$micropython_dir"/modules/response
+
+# copy font module
+cp -r "$picoware_dir"/src/MicroPython/font "$micropython_dir"/modules/font
 
 echo "Starting PicoCalc build process..."
 
@@ -49,6 +75,6 @@ echo "Starting PicoCalc build process..."
 cd "$micropython_dir"
 
 # PicoCalc - Pico W
-make BOARD=RPI_PICO_W USER_C_MODULES="$micropython_dir"/modules/PicoCalc/picoware_modules.cmake
+make -j BOARD=RPI_PICO_W USER_C_MODULES="$micropython_dir"/modules/PicoCalc/picoware_modules.cmake
 cp "$micropython_dir"/build-RPI_PICO_W/firmware.uf2 "$picoware_dir"/builds/MicroPython/Picoware-PicoCalcPicoW.uf2
 echo "PicoCalc - Pico W build complete."

@@ -1,0 +1,84 @@
+#!/bin/sh
+# Script to build and install the MicroPython version of Picoware 
+echo "Building MicroPython Picoware firmware for Waveshare 3.49..."
+
+# set your locations
+micropython_dir="/Users/user/pico/micropython/ports/rp2"
+picoware_dir="/Users/user/Desktop/Picoware"
+
+echo "Using MicroPython directory: $micropython_dir"
+echo "Using Picoware directory: $picoware_dir"
+
+echo "Cleaning existing MicroPython Picoware modules..."
+
+# remove existing main.py and picoware folder if it exists
+rm -rf "$micropython_dir"/modules/main.py
+rm -rf "$micropython_dir"/modules/picoware
+
+# remove existing PicoCalc modules directory if it exists
+rm -rf "$micropython_dir"/modules/PicoCalc # delete entire PicoCalc directory
+
+# remove existing Waveshare modules directory if it exists
+rm -rf "$micropython_dir"/modules/Waveshare
+
+# remove auto complete module if it exists
+rm -rf "$micropython_dir"/modules/auto_complete
+
+# remove vector module if it exists
+rm -rf "$micropython_dir"/modules/vector
+
+# remove response module if it exists
+rm -rf "$micropython_dir"/modules/response
+
+# remove font module if it exists
+rm -rf "$micropython_dir"/modules/font
+
+# Clean previous builds
+echo "Cleaning previous builds..."
+cd "$micropython_dir"
+rm -rf build-WAVESHARE_RP2350_TOUCH_LCD_3_49 
+
+echo "Installing new MicroPython Picoware modules..."
+
+# copy main.py and picoware folder if it exists
+cp "$picoware_dir"/src/MicroPython/main.py "$micropython_dir"/modules/main.py
+cp -r "$picoware_dir"/src/MicroPython/picoware "$micropython_dir"/modules/picoware
+
+# copy waveshare_rp2350_touch_lcd_3.49 boards folder to micropython boards directory
+cp -r "$picoware_dir"/src/MicroPython/boards/WAVESHARE_RP2350_TOUCH_LCD_3_49 "$micropython_dir"/boards
+
+# copy waveshare_rp2350_touch_lcd_3.49.h to PicoSDK boards include directory
+cp "$picoware_dir"/src/MicroPython/boards/WAVESHARE_RP2350_TOUCH_LCD_3_49/waveshare_rp2350_touch_lcd_3.49.h "$micropython_dir"/../../lib/pico-sdk/src/boards/include/boards/
+
+# ensure Waveshare 3.49 modules directory exists
+mkdir -p "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49
+
+# copy waveshare 3.49 modules file to micropython modules directory
+cp "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/waveshare_modules.cmake "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_modules.cmake
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/picoware_boards "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/picoware_boards
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/picoware_game "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/picoware_game
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/waveshare_battery "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_battery
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/waveshare_lcd "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_lcd
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/waveshare_sd "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_sd
+cp -r "$picoware_dir"/src/MicroPython/Waveshare/RP2350-Touch-LCD-3.49/waveshare_touch "$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_touch
+
+# copy auto complete module
+cp -r "$picoware_dir"/src/MicroPython/auto_complete "$micropython_dir"/modules/auto_complete
+
+# copy vector module
+cp -r "$picoware_dir"/src/MicroPython/vector "$micropython_dir"/modules/vector
+
+# copy response module
+cp -r "$picoware_dir"/src/MicroPython/response "$micropython_dir"/modules/response
+
+# copy font module
+cp -r "$picoware_dir"/src/MicroPython/font "$micropython_dir"/modules/font
+
+echo "Starting Waveshare 3.49 build process..."
+
+# Waveshare - 3.49
+make -j BOARD=WAVESHARE_RP2350_TOUCH_LCD_3_49 USER_C_MODULES="$micropython_dir"/modules/Waveshare/RP2350-Touch-LCD-3.49/waveshare_modules.cmake
+cp "$micropython_dir"/build-WAVESHARE_RP2350_TOUCH_LCD_3_49/firmware.uf2 "$picoware_dir"/builds/MicroPython/Picoware-Waveshare-3.49.uf2
+echo "Waveshare - 3.49 build complete."
+
+echo "MicroPython Picoware Waveshare 3.49 build completed successfully!"

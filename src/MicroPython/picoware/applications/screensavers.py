@@ -9,14 +9,13 @@ def start(view_manager) -> bool:
     from picoware.system.app_loader import AppLoader
 
     if not view_manager.has_sd_card:
-        print("Screensavers app requires an SD card")
+        view_manager.alert("Screensavers app requires an SD card.", False)
         return False
 
     # create screensavers folder if it doesn't exist
-    view_manager.get_storage().mkdir("picoware/apps/screensavers")
+    view_manager.storage.mkdir("picoware/apps/screensavers")
 
     global _screensavers
-    global _screensavers_index
     global _app_loader
 
     if _app_loader:
@@ -32,10 +31,10 @@ def start(view_manager) -> bool:
         "Screensavers",
         0,
         view_manager.draw.size.y,
-        view_manager.get_foreground_color(),
-        view_manager.get_background_color(),
-        view_manager.get_selected_color(),
-        view_manager.get_foreground_color(),
+        view_manager.foreground_color,
+        view_manager.background_color,
+        view_manager.selected_color,
+        view_manager.foreground_color,
         2,
     )
     _app_loader = AppLoader(view_manager)
@@ -61,13 +60,13 @@ def run(view_manager) -> None:
         BUTTON_RIGHT,
     )
 
-    global _screensavers_index, _app_loader
+    global _screensavers_index
 
     if not _screensavers:
         return
 
     input_manager = view_manager.input_manager
-    button: int = input_manager.get_last_button()
+    button: int = input_manager.button
 
     if button in (BUTTON_UP, BUTTON_LEFT):
         input_manager.reset()
@@ -81,31 +80,45 @@ def run(view_manager) -> None:
         view_manager.back()
     elif button == BUTTON_CENTER:
         input_manager.reset()
-        _screensavers_index = _screensavers.get_selected_index()
+        _screensavers_index = _screensavers.selected_index
 
         # Get the selected screensaver name
-        selected_screensaver = _screensavers.get_current_item()
+        selected_screensaver = _screensavers.current_item
 
         if selected_screensaver and _app_loader:
             # Try to load the screensaver
             screensaver_module = _app_loader.load_app(
                 selected_screensaver, "screensavers"
             )
-            if screensaver_module:
-                # Create a view for the screensaver and switch to it
-                screensaver_view_name = f"screensaver_{selected_screensaver}"
+            if screensaver_module is None:
+                view_manager.alert(
+                    f'Could not load screensaver "{selected_screensaver}".'
+                )
+                return
+            from utime import ticks_ms
 
-                # Check if view already exists
-                if view_manager.get_view(screensaver_view_name) is None:
-                    screensaver_view = View(
-                        screensaver_view_name,
-                        screensaver_module.run,
-                        screensaver_module.start,
-                        screensaver_module.stop,
-                    )
-                    view_manager.add(screensaver_view)
+            start_time = ticks_ms()
 
-                view_manager.switch_to(screensaver_view_name)
+            # Create a view for the screensaver and switch to it
+            screensaver_view_name = f"screensaver_{selected_screensaver}"
+
+            # Check if view already exists
+            if view_manager.get_view(screensaver_view_name) is None:
+                screensaver_view = View(
+                    screensaver_view_name,
+                    screensaver_module.run,
+                    screensaver_module.start,
+                    screensaver_module.stop,
+                )
+                print(
+                    f"[Screensavers]: Created view for app {selected_screensaver} after {ticks_ms() - start_time} ms"
+                )
+                view_manager.add(screensaver_view)
+
+            view_manager.switch_to(screensaver_view_name)
+            print(
+                f'[Screensavers]: Switched to view for app "{selected_screensaver}" after {ticks_ms() - start_time} ms'
+            )
 
 
 def stop(view_manager) -> None:

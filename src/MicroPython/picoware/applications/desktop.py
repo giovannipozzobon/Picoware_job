@@ -1,7 +1,12 @@
+from picoware.applications.wifi.utils import connect_to_saved_wifi
+
+
 class PicowareAnimation:
     """Class to draw "Picoware" animation"""
 
     def __init__(self, draw):
+        from picoware.system.vector import Vector
+
         self.display = draw
         self.letter_states = []
         self.animation_complete = False
@@ -13,7 +18,16 @@ class PicowareAnimation:
         self.center_y = self.size.y // 2
         self.frame_counter = 0
 
+        self.text_vec = Vector(0, 0)
+        self.circ_vec = Vector(0, 0)
+
         self._initialize_letter_animation()
+
+    def __del__(self):
+        del self.letter_states
+        self.letter_states = None
+        self.text_vec = None
+        self.circ_vec = None
 
     def _initialize_letter_animation(self) -> None:
         """Initialize the animation state for each letter in 'Picoware'."""
@@ -25,7 +39,6 @@ class PicowareAnimation:
             TFT_VIOLET,
             TFT_CYAN,
             TFT_ORANGE,
-            TFT_DARKCYAN,
             TFT_PINK,
             TFT_SKYBLUE,
         )
@@ -51,7 +64,6 @@ class PicowareAnimation:
             TFT_VIOLET,
             TFT_CYAN,
             TFT_ORANGE,
-            TFT_DARKCYAN,
             TFT_PINK,
             TFT_SKYBLUE,
         ]
@@ -74,7 +86,6 @@ class PicowareAnimation:
 
     def draw(self) -> None:
         """Draw the animated 'Picoware' text."""
-        from picoware.system.vector import Vector
 
         # Draw background animations
         if self.circle_radius < self.circle_max_radius:
@@ -96,13 +107,12 @@ class PicowareAnimation:
             if (
                 self.frame_counter % max(1, (100 - self.circle_opacity) // 20 + 1)
             ) == 0:
-                self.display.circle(
-                    Vector(self.center_x, self.center_y), self.circle_radius, color
-                )
+                self.circ_vec.x = self.center_x
+                self.circ_vec.y = self.center_y
+                self.display.circle(self.circ_vec, self.circle_radius, color)
 
         all_settled = True
 
-        text_vector = Vector(0, 0)
         for letter in self.letter_states:
             # Handle delay before letter starts moving
             if letter["frame"] < letter["delay"]:
@@ -131,10 +141,10 @@ class PicowareAnimation:
                 # Use modulo to create a fade pattern
                 # At low opacity, only draw occasionally; at high opacity, always draw
                 if (self.frame_counter % max(1, opacity_threshold // 10 + 1)) == 0:
-                    text_vector.x = letter["target_x"]
-                    text_vector.y = int(letter["current_y"])
+                    self.text_vec.x = letter["target_x"]
+                    self.text_vec.y = int(letter["current_y"])
                     self.display.text(
-                        text_vector,
+                        self.text_vec,
                         letter["char"],
                         letter["color"],
                     )
@@ -149,136 +159,159 @@ _desktop = None
 _desktop_http = None
 _desktop_picoware = None
 _desktop_time_updated = False
-_desktop_is_dark_mode = False
+_time = None
+_timezone = None
+_has_wifi = True
+
+
+def _http_callback(response, state, error):
+    """HTTP callback to process location and time data."""
+    global _desktop_http, _desktop_time_updated, _timezone
+
+    if not _desktop_http:
+        return
+
+    if any([not response, error, state == 2]):  # HTTP_ERROR
+        _desktop_http.close()
+        # Retry step 1
+        _desktop_http.get_async("https://ipwhois.app/json/")
+        return
+
+    data: dict = response.json()
+
+    # Get timezone from IP location
+    if _timezone is None:
+        timezone = data.get("timezone", "UTC")
+        _timezone = timezone
+
+        # Fetch time for detected timezone
+        _desktop_http.close()
+        _desktop_http.get_async(
+            f"http://timeapi.io/api/time/current/zone?timeZone={_timezone}"
+        )
+        return
+
+    # Process time data from timeapi.io
+    year = data.get("year")
+    month = data.get("month")
+    day = data.get("day")
+    hour = data.get("hour")
+    minute = data.get("minute")
+    seconds = data.get("seconds")
+
+    if all([year, month, day, hour, minute, seconds]):
+        _time.set(year, month, day, hour, minute, seconds)
+        _desktop_time_updated = True
+        _desktop.set_time(_time.time)
+
+    _desktop_http.close()
+    del _desktop_http
+    _desktop_http = None
 
 
 def start(view_manager) -> bool:
     """Start the loading animation."""
     from picoware.gui.desktop import Desktop
-    from picoware.applications.wifi.utils import connect_to_saved_wifi
 
-    global _desktop, _desktop_http, _desktop_is_dark_mode, _desktop_picoware
+    global _desktop, _desktop_http, _desktop_picoware, _time, _desktop_time_updated, _timezone, _has_wifi
 
     if _desktop is None:
         _desktop = Desktop(
             view_manager.draw,
-            view_manager.get_foreground_color(),
-            view_manager.get_background_color(),
+            view_manager.foreground_color,
+            view_manager.background_color,
         )
 
     if _desktop_picoware is None:
         _desktop_picoware = PicowareAnimation(view_manager.draw)
 
     if not view_manager.has_wifi:
+        _has_wifi = False
         return True
 
-    wifi = view_manager.get_wifi()
+    _has_wifi = True
 
     connect_to_saved_wifi(view_manager)
 
     if _desktop_http is None:
         from picoware.system.http import HTTP
 
-        _desktop_http = HTTP()
+        _desktop_http = HTTP(thread_manager=view_manager.thread_manager)
 
-        if wifi.is_connected():
-            _desktop_http.get_async("http://worldtimeapi.org/api/ip")
+        if view_manager.wifi.is_connected() and not view_manager.time.is_set:
+            _desktop_time_updated = False
+            _timezone = None  # Reset timezone
+            _desktop_http.callback = _http_callback
+            # Get timezone from IP location
+            _desktop_http.get_async("https://ipwhois.app/json/")
 
-    return True
+    _time = view_manager.time
+
+    return _desktop is not None
 
 
 def run(view_manager) -> None:
     """Animate the loading spinner."""
     from picoware.system.buttons import BUTTON_LEFT, BUTTON_CENTER, BUTTON_UP
-    from picoware.system.view import View
+
+    global _desktop_time_updated, _timezone, _has_wifi
 
     input_manager = view_manager.input_manager
     button: int = input_manager.button
 
-    global _desktop
-    global _desktop_http
-    global _desktop_time_updated
-    global _desktop_picoware
-
-    if _desktop:
-        from picoware.system.vector import Vector
-
-        battery_level: int = input_manager.battery
-        _desktop.set_battery(battery_level)
-
-        # Clear and draw header
-        view_manager.draw.clear(
-            Vector(0, 0), view_manager.draw.size, view_manager.get_background_color()
-        )
-        _desktop.draw_header()
-
-        # Draw animated picoware text every frame
-        _desktop_picoware.draw()
-
-        # Swap buffer to display
-        view_manager.draw.swap()
-
-        wifi = view_manager.get_wifi()
-        if wifi:
-            if not _desktop_time_updated and wifi.is_connected():
-                if _desktop_http and _desktop_http.is_request_complete():
-                    try:
-                        response = _desktop_http.response
-                        if not response:
-                            # i realized that sometimes this API returns an empty response
-                            # but it usually works within 2-3 tries
-                            _desktop_http.clear_async_response()
-                            _desktop_http.get_async("http://worldtimeapi.org/api/ip")
-                            return
-                        if _desktop_http.state == 0:  # HTTP_IDLE
-                            from ujson import loads
-
-                            data: dict = loads(response)
-                            datetime_str: str = data.get("datetime", "")
-                            if datetime_str:
-                                date_part, time_part = datetime_str.split("T")
-                                time_part = time_part.split(".")[
-                                    0
-                                ]  # Remove milliseconds
-                                hours, minutes, seconds = map(int, time_part.split(":"))
-                                year, month, day = map(int, date_part.split("-"))
-
-                                view_manager.get_time().set(
-                                    year, month, day, hours, minutes, seconds
-                                )
-
-                                _desktop_time_updated = True
-
-                                _desktop.set_time(view_manager.get_time().time)
-
-                                del _desktop_http
-                                _desktop_http = None
-                        else:
-                            print(
-                                "Failed to fetch time data, HTTP state:",
-                                _desktop_http.state,
-                            )
-
-                    except Exception as e:
-                        print("Error processing time data:", e)
-            elif _desktop_time_updated:
-                # time is RTC, so no need to fetch, just pass the updated time
-                _desktop.set_time(view_manager.get_time().time)
-
     if button == BUTTON_LEFT:
         from picoware.applications.system import system_info
+        from picoware.system.view import View
 
         input_manager.reset()
         view_manager.add(
             View("system_info", system_info.run, system_info.start, system_info.stop)
         )
         view_manager.switch_to("system_info")
-    elif button in (BUTTON_CENTER, BUTTON_UP):
+        return
+    if button in (BUTTON_CENTER, BUTTON_UP):
         from picoware.applications import library
+        from picoware.system.view import View
 
         input_manager.reset()
         view_manager.add(View("library", library.run, library.start, library.stop))
         view_manager.switch_to("library")
+        return
+
+    battery_level: int = input_manager.battery
+    _desktop.set_battery(battery_level)
+
+    # Clear and draw header
+    view_manager.draw.erase()
+    _desktop.draw_header(False if not _has_wifi else view_manager.wifi.is_connected())
+
+    # Draw animated picoware text every frame
+    _desktop_picoware.draw()
+
+    # Swap buffer to display
+    view_manager.draw.swap()
+
+    if not _has_wifi:
+        return
+
+    wifi = view_manager.wifi
+    is_connected = wifi.is_connected()
+    if not is_connected:
+        if wifi.state in (0, 4):  # WIFI_STATE_IDLE, WIFI_STATE_TIMEOUT
+            connect_to_saved_wifi(view_manager)
+        return
+
+    if is_connected and not view_manager.time.is_set and not _desktop_http.in_progress:
+        _desktop_time_updated = False
+        _timezone = None  # Reset timezone
+        _desktop_http.callback = _http_callback
+        # Get timezone from IP location
+        _desktop_http.get_async("https://ipwhois.app/json/")
+        return
+
+    if _desktop_time_updated:
+        # time is RTC, so no need to fetch, just pass the updated time
+        _desktop.set_time(_time.time)
 
 
 def stop(view_manager) -> None:
@@ -288,15 +321,23 @@ def stop(view_manager) -> None:
     global _desktop
     global _desktop_http
     global _desktop_picoware
+    global _desktop_time_updated
+    global _timezone
+    global _has_wifi
 
     if _desktop:
         del _desktop
         _desktop = None
     if _desktop_http:
+        _desktop_http.close()
         del _desktop_http
         _desktop_http = None
     if _desktop_picoware:
         del _desktop_picoware
         _desktop_picoware = None
+
+    _desktop_time_updated = view_manager.time.is_set
+    _timezone = None
+    _has_wifi = True
 
     collect()

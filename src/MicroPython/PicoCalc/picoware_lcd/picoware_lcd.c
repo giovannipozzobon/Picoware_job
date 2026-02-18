@@ -1,6 +1,8 @@
 /*
  * Picoware LCD Native C Extension for MicroPython
+ * Copyright © 2025 JBlanked
  *
+ * Uses PSRAM for framebuffer storage instead of static RAM
  */
 
 #include "py/runtime.h"
@@ -8,683 +10,231 @@
 #include "py/objarray.h"
 #include "py/mphal.h"
 #include "lcd.h"
+#include "picoware_lcd_shared.h"
+#include "../picoware_psram/psram_qspi.h"
+#include "../picoware_psram/picoware_psram_shared.h"
 #include <stdlib.h>
 #include <string.h>
+
+#include "../../font/font_mp.h"
 
 // Define STATIC if not already defined (MicroPython macro)
 #ifndef STATIC
 #define STATIC static
 #endif
 
-// Module constants
-#define DISPLAY_WIDTH 320
-#define DISPLAY_HEIGHT 320
-#define PALETTE_SIZE 256
-#define FONT_WIDTH 5
-#define FONT_HEIGHT 8
-#define CHAR_WIDTH 6 // Including spacing
-#define CHAR_HEIGHT 8
+#ifdef FONT_DEFAULT
+#undef FONT_DEFAULT
+#define FONT_DEFAULT FONT_XTRA_SMALL
+#endif
+
+#define LCD_CHUNK_LINES 16
 
 // Module state
 static bool module_initialized = false;
 
-// Static framebuffer
-uint8_t static_framebuffer[DISPLAY_WIDTH * DISPLAY_HEIGHT];
+// Line buffer for batch operations (reusable)
+static uint8_t line_buffer[DISPLAY_WIDTH] __attribute__((aligned(64)));
 
-static const uint8_t *get_font_data(void)
+#define LCD_MODE_PSRAM 0 // PSRAM framebuffer with RGB332 palette
+#define LCD_MODE_HEAP 1  // Heap RAM framebuffer with RGB332 (converted to RGB565 on swap)
+
+static uint8_t lcd_mode = LCD_MODE_PSRAM;
+
+// Heap mode state
+static uint8_t *heap_framebuffer = NULL; // RGB332 framebuffer in heap RAM
+static bool heap_framebuffer_allocated = false;
+#define HEAP_BUFFER_SIZE (DISPLAY_WIDTH * DISPLAY_HEIGHT) // 102,400 bytes for RGB332
+
+static uint16_t palette[256] __attribute__((aligned(64))); // 256-color palette for RGB332
+
+// Convert RGB565 to RGB332 index
+STATIC uint8_t color565_to_332(uint16_t color)
 {
-    static const uint8_t font_data[] = {
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00, // char 0
-        0x3e,
-        0x5b,
-        0x4f,
-        0x5b,
-        0x3e, // char 1
-        0x3e,
-        0x6b,
-        0x4f,
-        0x6b,
-        0x3e, // char 2
-        0x1c,
-        0x3e,
-        0x7c,
-        0x3e,
-        0x1c, // char 3
-        0x18,
-        0x3c,
-        0x7e,
-        0x3c,
-        0x18, // char 4
-        0x1c,
-        0x57,
-        0x7d,
-        0x57,
-        0x1c, // char 5
-        0x1c,
-        0x5e,
-        0x7f,
-        0x5e,
-        0x1c, // char 6
-        0x00,
-        0x18,
-        0x3c,
-        0x18,
-        0x00, // char 7
-        0xff,
-        0xe7,
-        0xc3,
-        0xe7,
-        0xff, // char 8
-        0x00,
-        0x18,
-        0x24,
-        0x18,
-        0x00, // char 9
-        0xff,
-        0xe7,
-        0xdb,
-        0xe7,
-        0xff, // char 10
-        0x30,
-        0x48,
-        0x3a,
-        0x06,
-        0x0e, // char 11
-        0x26,
-        0x29,
-        0x79,
-        0x29,
-        0x26, // char 12
-        0x40,
-        0x7f,
-        0x05,
-        0x05,
-        0x07, // char 13
-        0x40,
-        0x7f,
-        0x05,
-        0x25,
-        0x3f, // char 14
-        0x5a,
-        0x3c,
-        0xe7,
-        0x3c,
-        0x5a, // char 15
-        0x7f,
-        0x3e,
-        0x1c,
-        0x1c,
-        0x08, // char 16
-        0x08,
-        0x1c,
-        0x1c,
-        0x3e,
-        0x7f, // char 17
-        0x14,
-        0x22,
-        0x7f,
-        0x22,
-        0x14, // char 18
-        0x5f,
-        0x5f,
-        0x00,
-        0x5f,
-        0x5f, // char 19
-        0x06,
-        0x09,
-        0x7f,
-        0x01,
-        0x7f, // char 20
-        0x00,
-        0x66,
-        0x89,
-        0x95,
-        0x6a, // char 21
-        0x60,
-        0x60,
-        0x60,
-        0x60,
-        0x60, // char 22
-        0x94,
-        0xa2,
-        0xff,
-        0xa2,
-        0x94, // char 23
-        0x08,
-        0x04,
-        0x7e,
-        0x04,
-        0x08, // char 24
-        0x10,
-        0x20,
-        0x7e,
-        0x20,
-        0x10, // char 25
-        0x08,
-        0x08,
-        0x2a,
-        0x1c,
-        0x08, // char 26
-        0x08,
-        0x1c,
-        0x2a,
-        0x08,
-        0x08, // char 27
-        0x1e,
-        0x10,
-        0x10,
-        0x10,
-        0x10, // char 28
-        0x0c,
-        0x1e,
-        0x0c,
-        0x1e,
-        0x0c, // char 29
-        0x30,
-        0x38,
-        0x3e,
-        0x38,
-        0x30, // char 30
-        0x06,
-        0x0e,
-        0x3e,
-        0x0e,
-        0x06, // char 31
-        0x00,
-        0x00,
-        0x00,
-        0x00,
-        0x00, // ' ' (space)
-        0x00,
-        0x00,
-        0x5f,
-        0x00,
-        0x00, // '!'
-        0x00,
-        0x07,
-        0x00,
-        0x07,
-        0x00, // '"'
-        0x14,
-        0x7f,
-        0x14,
-        0x7f,
-        0x14, // '#'
-        0x24,
-        0x2a,
-        0x7f,
-        0x2a,
-        0x12, // '$'
-        0x23,
-        0x13,
-        0x08,
-        0x64,
-        0x62, // '%'
-        0x36,
-        0x49,
-        0x56,
-        0x20,
-        0x50, // '&'
-        0x00,
-        0x08,
-        0x07,
-        0x03,
-        0x00, // '\''
-        0x00,
-        0x1c,
-        0x22,
-        0x41,
-        0x00, // '('
-        0x00,
-        0x41,
-        0x22,
-        0x1c,
-        0x00, // ')'
-        0x2a,
-        0x1c,
-        0x7f,
-        0x1c,
-        0x2a, // '*'
-        0x08,
-        0x08,
-        0x3e,
-        0x08,
-        0x08, // '+'
-        0x00,
-        0x80,
-        0x70,
-        0x30,
-        0x00, // ','
-        0x08,
-        0x08,
-        0x08,
-        0x08,
-        0x08, // '-'
-        0x00,
-        0x00,
-        0x60,
-        0x60,
-        0x00, // '.'
-        0x20,
-        0x10,
-        0x08,
-        0x04,
-        0x02, // '/'
-        0x3e,
-        0x51,
-        0x49,
-        0x45,
-        0x3e, // '0'
-        0x00,
-        0x42,
-        0x7f,
-        0x40,
-        0x00, // '1'
-        0x72,
-        0x49,
-        0x49,
-        0x49,
-        0x46, // '2'
-        0x21,
-        0x41,
-        0x49,
-        0x4d,
-        0x33, // '3'
-        0x18,
-        0x14,
-        0x12,
-        0x7f,
-        0x10, // '4'
-        0x27,
-        0x45,
-        0x45,
-        0x45,
-        0x39, // '5'
-        0x3c,
-        0x4a,
-        0x49,
-        0x49,
-        0x31, // '6'
-        0x41,
-        0x21,
-        0x11,
-        0x09,
-        0x07, // '7'
-        0x36,
-        0x49,
-        0x49,
-        0x49,
-        0x36, // '8'
-        0x46,
-        0x49,
-        0x49,
-        0x29,
-        0x1e, // '9'
-        0x00,
-        0x00,
-        0x14,
-        0x00,
-        0x00, // ':'
-        0x00,
-        0x40,
-        0x34,
-        0x00,
-        0x00, // ';'
-        0x00,
-        0x08,
-        0x14,
-        0x22,
-        0x41, // '<'
-        0x14,
-        0x14,
-        0x14,
-        0x14,
-        0x14, // '='
-        0x00,
-        0x41,
-        0x22,
-        0x14,
-        0x08, // '>'
-        0x02,
-        0x01,
-        0x59,
-        0x09,
-        0x06, // '?'
-        0x3e,
-        0x41,
-        0x5d,
-        0x59,
-        0x4e, // '@'
-        0x7c,
-        0x12,
-        0x11,
-        0x12,
-        0x7c, // 'A'
-        0x7f,
-        0x49,
-        0x49,
-        0x49,
-        0x36, // 'B'
-        0x3e,
-        0x41,
-        0x41,
-        0x41,
-        0x22, // 'C'
-        0x7f,
-        0x41,
-        0x41,
-        0x41,
-        0x3e, // 'D'
-        0x7f,
-        0x49,
-        0x49,
-        0x49,
-        0x41, // 'E'
-        0x7f,
-        0x09,
-        0x09,
-        0x09,
-        0x01, // 'F'
-        0x3e,
-        0x41,
-        0x41,
-        0x51,
-        0x73, // 'G'
-        0x7f,
-        0x08,
-        0x08,
-        0x08,
-        0x7f, // 'H'
-        0x00,
-        0x41,
-        0x7f,
-        0x41,
-        0x00, // 'I'
-        0x20,
-        0x40,
-        0x41,
-        0x3f,
-        0x01, // 'J'
-        0x7f,
-        0x08,
-        0x14,
-        0x22,
-        0x41, // 'K'
-        0x7f,
-        0x40,
-        0x40,
-        0x40,
-        0x40, // 'L'
-        0x7f,
-        0x02,
-        0x1c,
-        0x02,
-        0x7f, // 'M'
-        0x7f,
-        0x04,
-        0x08,
-        0x10,
-        0x7f, // 'N'
-        0x3e,
-        0x41,
-        0x41,
-        0x41,
-        0x3e, // 'O'
-        0x7f,
-        0x09,
-        0x09,
-        0x09,
-        0x06, // 'P'
-        0x3e,
-        0x41,
-        0x51,
-        0x21,
-        0x5e, // 'Q'
-        0x7f,
-        0x09,
-        0x19,
-        0x29,
-        0x46, // 'R'
-        0x26,
-        0x49,
-        0x49,
-        0x49,
-        0x32, // 'S'
-        0x03,
-        0x01,
-        0x7f,
-        0x01,
-        0x03, // 'T'
-        0x3f,
-        0x40,
-        0x40,
-        0x40,
-        0x3f, // 'U'
-        0x1f,
-        0x20,
-        0x40,
-        0x20,
-        0x1f, // 'V'
-        0x3f,
-        0x40,
-        0x38,
-        0x40,
-        0x3f, // 'W'
-        0x63,
-        0x14,
-        0x08,
-        0x14,
-        0x63, // 'X'
-        0x03,
-        0x04,
-        0x78,
-        0x04,
-        0x03, // 'Y'
-        0x61,
-        0x59,
-        0x49,
-        0x4d,
-        0x43, // 'Z'
-        0x00,
-        0x7f,
-        0x41,
-        0x41,
-        0x41, // '['
-        0x02,
-        0x04,
-        0x08,
-        0x10,
-        0x20, // '\'
-        0x00,
-        0x41,
-        0x41,
-        0x41,
-        0x7f, // ']'
-        0x04,
-        0x02,
-        0x01,
-        0x02,
-        0x04, // '^'
-        0x40,
-        0x40,
-        0x40,
-        0x40,
-        0x40, // '_'
-        0x00,
-        0x03,
-        0x07,
-        0x08,
-        0x00, // '`'
-        0x20,
-        0x54,
-        0x54,
-        0x78,
-        0x40, // 'a'
-        0x7f,
-        0x28,
-        0x44,
-        0x44,
-        0x38, // 'b'
-        0x38,
-        0x44,
-        0x44,
-        0x44,
-        0x28, // 'c'
-        0x38,
-        0x44,
-        0x44,
-        0x28,
-        0x7f, // 'd'
-        0x38,
-        0x54,
-        0x54,
-        0x54,
-        0x18, // 'e'
-        0x00,
-        0x08,
-        0x7e,
-        0x09,
-        0x02, // 'f'
-        0x18,
-        0xa4,
-        0xa4,
-        0x9c,
-        0x78, // 'g'
-        0x7f,
-        0x08,
-        0x04,
-        0x04,
-        0x78, // 'h'
-        0x00,
-        0x44,
-        0x7d,
-        0x40,
-        0x00, // 'i'
-        0x20,
-        0x40,
-        0x40,
-        0x3d,
-        0x00, // 'j'
-        0x7f,
-        0x10,
-        0x28,
-        0x44,
-        0x00, // 'k'
-        0x00,
-        0x41,
-        0x7f,
-        0x40,
-        0x00, // 'l'
-        0x7c,
-        0x04,
-        0x78,
-        0x04,
-        0x78, // 'm'
-        0x7c,
-        0x08,
-        0x04,
-        0x04,
-        0x78, // 'n'
-        0x38,
-        0x44,
-        0x44,
-        0x44,
-        0x38, // 'o'
-        0xfc,
-        0x18,
-        0x24,
-        0x24,
-        0x18, // 'p'
-        0x18,
-        0x24,
-        0x24,
-        0x18,
-        0xfc, // 'q'
-        0x7c,
-        0x08,
-        0x04,
-        0x04,
-        0x08, // 'r'
-        0x48,
-        0x54,
-        0x54,
-        0x54,
-        0x24, // 's'
-        0x04,
-        0x04,
-        0x3f,
-        0x44,
-        0x24, // 't'
-        0x3c,
-        0x40,
-        0x40,
-        0x20,
-        0x7c, // 'u'
-        0x1c,
-        0x20,
-        0x40,
-        0x20,
-        0x1c, // 'v'
-        0x3c,
-        0x40,
-        0x30,
-        0x40,
-        0x3c, // 'w'
-        0x44,
-        0x28,
-        0x10,
-        0x28,
-        0x44, // 'x'
-        0x4c,
-        0x90,
-        0x90,
-        0x90,
-        0x7c, // 'y'
-        0x44,
-        0x64,
-        0x54,
-        0x4c,
-        0x44, // 'z'
-        0x00,
-        0x08,
-        0x36,
-        0x41,
-        0x00, // '{'
-        0x00,
-        0x00,
-        0x77,
-        0x00,
-        0x00, // '|'
-        0x00,
-        0x41,
-        0x36,
-        0x08,
-        0x00, // '}'
-        0x02,
-        0x01,
-        0x02,
-        0x04,
-        0x02, // '~'
-        0x3c,
-        0x26,
-        0x23,
-        0x26,
-        0x3c, // char 127
-    };
-    return font_data;
+    return ((color & 0xE000) >> 8) | ((color & 0x0700) >> 6) | ((color & 0x0018) >> 3);
 }
 
-// Function to initialize the LCD
+void picoware_write_pixel_fb(psram_qspi_inst_t *psram, int x, int y, uint8_t color_index)
+{
+    if (lcd_mode == LCD_MODE_PSRAM)
+    {
+        if (x >= 0 && x < DISPLAY_WIDTH && y >= 0 && y < DISPLAY_HEIGHT)
+        {
+            uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (y * PSRAM_ROW_SIZE) + x;
+            psram_qspi_write8(psram, addr, color_index);
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP)
+    {
+        if (heap_framebuffer != NULL && x >= 0 && x < DISPLAY_WIDTH && y >= 0 && y < DISPLAY_HEIGHT)
+        {
+            heap_framebuffer[y * DISPLAY_WIDTH + x] = color_index;
+        }
+    }
+}
+
+// Batch write 16-bit RGB565 buffer to framebuffer (for LVGL)
+// Converts RGB565 to RGB332 on the fly
+void picoware_write_buffer_fb_16(psram_qspi_inst_t *psram, int x, int y, int width, int height, const uint16_t *buffer)
+{
+    if (!buffer)
+        return;
+
+    for (int row = 0; row < height; row++)
+    {
+        int fb_y = y + row;
+        if (fb_y < 0 || fb_y >= DISPLAY_HEIGHT)
+            continue;
+
+        for (int col = 0; col < width; col++)
+        {
+            int fb_x = x + col;
+            if (fb_x < 0 || fb_x >= DISPLAY_WIDTH)
+                continue;
+
+            // Convert RGB565 to RGB332 using palette conversion
+            uint16_t rgb565 = buffer[row * width + col];
+            uint8_t rgb332 = color565_to_332(rgb565);
+            picoware_write_pixel_fb(psram, fb_x, fb_y, rgb332);
+        }
+    }
+}
+
+static uint16_t lcd_color332_to_565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
+}
+
+// Helper to write a horizontal line to PSRAM (optimized batch write)
+__force_inline static void psram_write_hline(int x, int y, int length, uint8_t color_index)
+{
+    if (y < 0 || y >= DISPLAY_HEIGHT || length <= 0)
+        return;
+
+    // Clip to screen bounds
+    if (x < 0)
+    {
+        length += x;
+        x = 0;
+    }
+    if (x + length > DISPLAY_WIDTH)
+    {
+        length = DISPLAY_WIDTH - x;
+    }
+    if (length <= 0)
+        return;
+
+    uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (y * PSRAM_ROW_SIZE) + x;
+
+    // Fill line buffer with color
+    memset(line_buffer, color_index, length);
+
+    // Write in chunks to PSRAM
+    uint32_t remaining = length;
+    uint32_t offset = 0;
+
+    while (remaining > 0)
+    {
+        uint32_t chunk_size = (remaining > PSRAM_CHUNK_SIZE) ? PSRAM_CHUNK_SIZE : remaining;
+        psram_qspi_write(&psram_instance, addr + offset, line_buffer + offset, chunk_size);
+        offset += chunk_size;
+        remaining -= chunk_size;
+    }
+}
+
+// Helper to allocate heap framebuffer
+static bool allocate_heap_framebuffer(void)
+{
+    if (heap_framebuffer == NULL)
+    {
+        heap_framebuffer = (uint8_t *)m_malloc(HEAP_BUFFER_SIZE);
+        if (heap_framebuffer == NULL)
+        {
+            return false;
+        }
+        memset(heap_framebuffer, 0, HEAP_BUFFER_SIZE);
+        heap_framebuffer_allocated = true;
+    }
+    return true;
+}
+
+// Helper to free heap framebuffer
+static void free_heap_framebuffer(void)
+{
+    if (heap_framebuffer != NULL && heap_framebuffer_allocated)
+    {
+        m_free(heap_framebuffer);
+        heap_framebuffer = NULL;
+        heap_framebuffer_allocated = false;
+    }
+}
+
+static void clear_psram_framebuffer(uint8_t color_index)
+{
+    // Pack four pixels into a 32-bit value for DMA burst fill
+    uint32_t fill_value = (color_index << 24) | (color_index << 16) | (color_index << 8) | color_index;
+
+    // Calculate number of 32-bit words (BUFFER_SIZE / 4)
+    uint32_t word_count = PSRAM_BUFFER_SIZE / 4;
+
+    // Use 32-bit fill with chunked writes for optimal DMA performance
+    static uint32_t fill32_buffer[PSRAM_CHUNK_SIZE / 4] __attribute__((aligned(64)));
+
+    // Fill the buffer with the 32-bit value
+    for (size_t i = 0; i < PSRAM_CHUNK_SIZE / 4; i++)
+    {
+        fill32_buffer[i] = fill_value;
+    }
+
+    uint32_t current_addr = PSRAM_FRAMEBUFFER_ADDR;
+    uint32_t remaining = word_count;
+
+    while (remaining > 0)
+    {
+        uint32_t words_in_chunk = (remaining > (PSRAM_CHUNK_SIZE / 4)) ? (PSRAM_CHUNK_SIZE / 4) : remaining;
+        psram_qspi_write(&psram_instance, current_addr, (const uint8_t *)fill32_buffer, words_in_chunk * 4);
+        current_addr += words_in_chunk * 4;
+        remaining -= words_in_chunk;
+    }
+}
+
+// deinit function
+STATIC mp_obj_t picoware_lcd_deinit(void)
+{
+    if (module_initialized)
+    {
+        // Free resources
+        free_heap_framebuffer();
+
+        if (psram_initialized)
+        {
+            psram_qspi_deinit(&psram_instance);
+            psram_initialized = false;
+        }
+
+        module_initialized = false;
+    }
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_lcd_deinit_obj, picoware_lcd_deinit);
+
+// Function to initialize the LCD and framebuffer (PSRAM or HEAP mode)
+// Arguments: background_color, [mode] (optional, 0=PSRAM, 1=HEAP)
 STATIC mp_obj_t picoware_lcd_init(size_t n_args, const mp_obj_t *args)
 {
-    // Arguments: background_color
-    if (n_args != 1)
+    if (n_args < 1 || n_args > 2)
     {
-        mp_raise_ValueError(MP_ERROR_TEXT("init requires 1 argument: background_color"));
+        mp_raise_ValueError(MP_ERROR_TEXT("init requires 1-2 arguments: background_color, [mode]"));
+    }
+
+    uint8_t requested_mode = LCD_MODE_PSRAM;
+    if (n_args == 2)
+    {
+        requested_mode = mp_obj_get_int(args[1]);
+        if (requested_mode > LCD_MODE_HEAP)
+        {
+            mp_raise_ValueError(MP_ERROR_TEXT("Invalid mode: 0=PSRAM, 1=HEAP"));
+        }
     }
 
     if (!module_initialized)
@@ -693,117 +243,140 @@ STATIC mp_obj_t picoware_lcd_init(size_t n_args, const mp_obj_t *args)
         lcd_set_background(mp_obj_get_int(args[0]));
         lcd_set_underscore(false);
         lcd_enable_cursor(false);
+
+        // Init palette (used for both modes)
+        for (int i = 0; i < 256; i++)
+        {
+            // Extract RGB332 components
+            uint8_t r3 = (i >> 5) & 0x07; // 3 bits for red
+            uint8_t g3 = (i >> 2) & 0x07; // 3 bits for green
+            uint8_t b2 = i & 0x03;        // 2 bits for blue
+
+            // Convert to 8-bit RGB
+            uint8_t r8 = (r3 * 255) / 7; // Scale 3-bit to 8-bit
+            uint8_t g8 = (g3 * 255) / 7; // Scale 3-bit to 8-bit
+            uint8_t b8 = (b2 * 255) / 3; // Scale 2-bit to 8-bit
+
+            // Convert to RGB565 for the palette
+            palette[i] = lcd_color332_to_565(r8, g8, b8);
+        }
+
         module_initialized = true;
     }
+
+    // Initialize mode-specific resources
+    lcd_mode = requested_mode;
+
+    if (lcd_mode == LCD_MODE_PSRAM)
+    {
+        // Initialize PSRAM for framebuffer
+        if (!psram_initialized)
+        {
+            psram_instance = psram_qspi_init(pio1, -1, 1.0f);
+            psram_initialized = true;
+        }
+        // Free heap buffer if it was allocated
+        free_heap_framebuffer();
+    }
+    else if (lcd_mode == LCD_MODE_HEAP)
+    {
+        // Allocate RGB332 framebuffer in heap RAM
+        if (!allocate_heap_framebuffer())
+        {
+            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("Failed to allocate heap framebuffer"));
+        }
+        // Clear the framebuffer to black
+        memset(heap_framebuffer, 0, HEAP_BUFFER_SIZE);
+
+        if (psram_initialized)
+        {
+            clear_psram_framebuffer(0);
+            psram_qspi_deinit(&psram_instance);
+            psram_initialized = false;
+        }
+    }
+
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_init_obj, 1, 1, picoware_lcd_init);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_init_obj, 1, 2, picoware_lcd_init);
 
-// Fast 8-bit to RGB565 conversion and blit function
-STATIC mp_obj_t picoware_lcd_blit_8bit(size_t n_args, const mp_obj_t *args)
+void picoware_lcd_swap_region(uint16_t x, uint16_t y, uint16_t width, uint16_t height)
 {
-    // Arguments: palette_data, width, height, x_offset, y_offset
-    if (n_args != 5)
+    uint16_t lcd_line_buffer[DISPLAY_WIDTH * LCD_CHUNK_LINES];
+
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        mp_raise_ValueError(MP_ERROR_TEXT("blit_8bit requires 5 arguments"));
-    }
+        uint8_t psram_row_buffer[DISPLAY_WIDTH];
 
-    // Get palette data (RGB565 values)
-    mp_buffer_info_t palette_info;
-    mp_get_buffer_raise(args[0], &palette_info, MP_BUFFER_READ);
-    uint16_t *palette = (uint16_t *)palette_info.buf;
-
-    // Get dimensions and position
-    int width = mp_obj_get_int(args[1]);
-    int height = mp_obj_get_int(args[2]);
-    int x_offset = mp_obj_get_int(args[3]);
-    int y_offset = mp_obj_get_int(args[4]);
-
-    // Validate arguments
-    if (width <= 0 || height <= 0 || width > DISPLAY_WIDTH || height > DISPLAY_HEIGHT)
-    {
-        mp_raise_ValueError(MP_ERROR_TEXT("Invalid dimensions"));
-    }
-
-    if (x_offset < 0 || y_offset < 0 ||
-        x_offset + width > DISPLAY_WIDTH || y_offset + height > DISPLAY_HEIGHT)
-    {
-        mp_raise_ValueError(MP_ERROR_TEXT("Invalid position"));
-    }
-
-    if (palette_info.len < PALETTE_SIZE * 2)
-    {
-        mp_raise_ValueError(MP_ERROR_TEXT("Palette too small"));
-    }
-
-    // Use line-by-line conversion to avoid large buffer allocation
-    uint16_t line_buffer[DISPLAY_WIDTH];
-
-    for (int y = 0; y < height; y++)
-    {
-        // Convert one line at a time
-        for (int x = 0; x < width; x++)
+        // Send data line by line in chunks
+        for (uint16_t row = 0; row < height; row += LCD_CHUNK_LINES)
         {
-            int fb_index = y * width + x;
-            uint8_t color_index = static_framebuffer[fb_index];
-            if (color_index < PALETTE_SIZE)
+            uint16_t lines_to_send = (row + LCD_CHUNK_LINES > height) ? (height - row) : LCD_CHUNK_LINES;
+
+            // Convert this chunk from RGB332 to RGB565 with byte swapping
+            for (uint16_t line = 0; line < lines_to_send; line++)
             {
-                line_buffer[x] = palette[color_index];
+                // Read row from PSRAM
+                uint32_t psram_addr = PSRAM_FRAMEBUFFER_ADDR + ((y + row + line) * PSRAM_ROW_SIZE) + x;
+                uint32_t remaining = width;
+                uint32_t offset = 0;
+
+                while (remaining > 0)
+                {
+                    uint32_t chunk_size = (remaining > PSRAM_CHUNK_SIZE) ? PSRAM_CHUNK_SIZE : remaining;
+                    psram_qspi_read(&psram_instance, psram_addr + offset, psram_row_buffer + offset, chunk_size);
+                    offset += chunk_size;
+                    remaining -= chunk_size;
+                }
+
+                // Convert to RGB565
+                for (uint16_t col = 0; col < width; col++)
+                {
+                    size_t buf_index = line * width + col;
+                    uint8_t palette_index = psram_row_buffer[col];
+                    lcd_line_buffer[buf_index] = palette[palette_index];
+                }
             }
-            else
+
+            // Send to LCD
+            lcd_blit(lcd_line_buffer, x, y + row, width, lines_to_send);
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP)
+    {
+        // Convert RGB332 heap buffer to RGB565 on the fly, just like PSRAM mode
+        if (heap_framebuffer != NULL)
+        {
+            // Send data line by line in chunks
+            for (uint16_t row = 0; row < height; row += LCD_CHUNK_LINES)
             {
-                line_buffer[x] = 0; // Black for invalid indices
+                uint16_t lines_to_send = (row + LCD_CHUNK_LINES > height) ? (height - row) : LCD_CHUNK_LINES;
+
+                // Convert this chunk from RGB332 to RGB565
+                for (uint16_t line = 0; line < lines_to_send; line++)
+                {
+                    uint8_t *heap_row = &heap_framebuffer[(y + row + line) * DISPLAY_WIDTH + x];
+                    // Convert to RGB565
+                    for (uint16_t col = 0; col < width; col++)
+                    {
+                        size_t buf_index = line * width + col;
+                        uint8_t palette_index = heap_row[col];
+                        lcd_line_buffer[buf_index] = palette[palette_index];
+                    }
+                }
+                // Send to LCD
+                lcd_blit(lcd_line_buffer, x, y + row, width, lines_to_send);
             }
         }
-
-        // Blit one line at a time
-        lcd_blit(line_buffer, x_offset, y_offset + y, width, 1);
     }
-
-    return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_blit_8bit_obj, 5, 5, picoware_lcd_blit_8bit);
 
-STATIC mp_obj_t picoware_lcd_blit_8bit_fullscreen(mp_obj_t palette_obj)
+STATIC mp_obj_t picoware_lcd_swap(void)
 {
-    // Get palette data (RGB565 values)
-    mp_buffer_info_t palette_info;
-    mp_get_buffer_raise(palette_obj, &palette_info, MP_BUFFER_READ);
-    uint16_t *palette = (uint16_t *)palette_info.buf;
-
-    // Validate buffer sizes
-    if (palette_info.len < PALETTE_SIZE * 2)
-    {
-        mp_raise_ValueError(MP_ERROR_TEXT("Palette too small"));
-    }
-
-    // Use line-by-line conversion for memory efficiency
-    uint16_t line_buffer[DISPLAY_WIDTH];
-
-    for (int y = 0; y < DISPLAY_HEIGHT; y++)
-    {
-        // Convert one line from 8-bit to 16-bit
-        for (int x = 0; x < DISPLAY_WIDTH; x++)
-        {
-            int fb_index = y * DISPLAY_WIDTH + x;
-            uint8_t color_index = static_framebuffer[fb_index];
-            if (color_index < PALETTE_SIZE)
-            {
-                line_buffer[x] = palette[color_index];
-            }
-            else
-            {
-                line_buffer[x] = 0; // Black for invalid indices
-            }
-        }
-
-        // Send to LCD - each line is sent immediately
-        lcd_blit(line_buffer, 0, y, DISPLAY_WIDTH, 1);
-    }
-
+    picoware_lcd_swap_region(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_1(picoware_lcd_blit_8bit_fullscreen_obj, picoware_lcd_blit_8bit_fullscreen);
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_lcd_swap_obj, picoware_lcd_swap);
 
 STATIC mp_obj_t picoware_lcd_clear_screen(void)
 {
@@ -826,13 +399,7 @@ STATIC mp_obj_t picoware_lcd_display_off(void)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_lcd_display_off_obj, picoware_lcd_display_off);
 
-// Convert RGB565 to RGB332 index
-STATIC uint8_t color565_to_332(uint16_t color)
-{
-    return ((color & 0xE000) >> 8) | ((color & 0x0700) >> 6) | ((color & 0x0018) >> 3);
-}
-
-// Draw pixel in 8-bit framebuffer
+// Draw pixel in framebuffer (PSRAM or HEAP mode)
 STATIC mp_obj_t picoware_lcd_draw_pixel(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: x, y, color565
@@ -851,16 +418,25 @@ STATIC mp_obj_t picoware_lcd_draw_pixel(size_t n_args, const mp_obj_t *args)
         return mp_const_none;
     }
 
-    // Convert to 8-bit and store
     uint8_t color_index = color565_to_332(color);
-    int buffer_index = y * DISPLAY_WIDTH + x;
-    static_framebuffer[buffer_index] = color_index;
+
+    if (lcd_mode == LCD_MODE_PSRAM)
+    {
+        // Write to PSRAM
+        uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (y * PSRAM_ROW_SIZE) + x;
+        psram_qspi_write8(&psram_instance, addr, color_index);
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Write RGB332 to heap framebuffer
+        heap_framebuffer[y * DISPLAY_WIDTH + x] = color_index;
+    }
 
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_pixel_obj, 3, 3, picoware_lcd_draw_pixel);
 
-// Fill rectangle in 8-bit framebuffer
+// Fill rectangle in framebuffer (PSRAM or HEAP mode)
 STATIC mp_obj_t picoware_lcd_fill_rect(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: x, y, width, height, color565
@@ -900,13 +476,33 @@ STATIC mp_obj_t picoware_lcd_fill_rect(size_t n_args, const mp_obj_t *args)
 
     uint8_t color_index = color565_to_332(color);
 
-    // Fast fill using optimized loops
-    for (int py = y; py < y + height; py++)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        int line_start = py * DISPLAY_WIDTH + x;
-        for (int px = 0; px < width; px++)
+        // Fill line buffer with color once
+        memset(line_buffer, color_index, width);
+
+        // Write each row using optimized PSRAM writes
+        for (int py = y; py < y + height; py++)
         {
-            static_framebuffer[line_start + px] = color_index;
+            uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + x;
+            uint32_t remaining = width;
+            uint32_t offset = 0;
+
+            while (remaining > 0)
+            {
+                uint32_t chunk_size = (remaining > PSRAM_CHUNK_SIZE) ? PSRAM_CHUNK_SIZE : remaining;
+                psram_qspi_write(&psram_instance, addr + offset, line_buffer + offset, chunk_size);
+                offset += chunk_size;
+                remaining -= chunk_size;
+            }
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Fill directly in RGB332 heap framebuffer
+        for (int py = y; py < y + height; py++)
+        {
+            memset(&heap_framebuffer[py * DISPLAY_WIDTH + x], color_index, width);
         }
     }
 
@@ -914,7 +510,7 @@ STATIC mp_obj_t picoware_lcd_fill_rect(size_t n_args, const mp_obj_t *args)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_fill_rect_obj, 5, 5, picoware_lcd_fill_rect);
 
-// Draw line
+// Draw horizontal line (supports both modes)
 STATIC mp_obj_t picoware_lcd_draw_line(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: x, y, length, color565
@@ -934,28 +530,49 @@ STATIC mp_obj_t picoware_lcd_draw_line(size_t n_args, const mp_obj_t *args)
 
     uint8_t color_index = color565_to_332(color);
 
-    // Draw horizontal line with bounds checking
-    for (int i = 0; i < length; i++)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        int currentX = x + i;
-        if (currentX >= 0 && currentX < DISPLAY_WIDTH)
+        // Use optimized horizontal line write
+        psram_write_hline(x, y, length, color_index);
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Clip to screen bounds
+        if (x < 0)
         {
-            int buffer_index = y * DISPLAY_WIDTH + currentX;
-            static_framebuffer[buffer_index] = color_index;
+            length += x;
+            x = 0;
         }
+        if (x + length > DISPLAY_WIDTH)
+        {
+            length = DISPLAY_WIDTH - x;
+        }
+        if (length <= 0)
+            return mp_const_none;
+
+        // Write RGB332 to heap framebuffer
+        memset(&heap_framebuffer[y * DISPLAY_WIDTH + x], color_index, length);
     }
 
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_line_obj, 4, 4, picoware_lcd_draw_line);
 
-// Clear framebuffer
-STATIC mp_obj_t picoware_lcd_clear_framebuffer(mp_obj_t color_index_obj)
+// Clear framebuffer (supports both modes)
+// Takes RGB332 color index for both modes
+STATIC mp_obj_t picoware_lcd_clear_framebuffer(mp_obj_t color_obj)
 {
-    uint8_t color_index = mp_obj_get_int(color_index_obj);
+    uint8_t color_index = mp_obj_get_int(color_obj);
 
-    // Fast clear using memset
-    memset(static_framebuffer, color_index, DISPLAY_WIDTH * DISPLAY_HEIGHT);
+    if (lcd_mode == LCD_MODE_PSRAM)
+    {
+        clear_psram_framebuffer(color_index);
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Fill entire heap framebuffer with RGB332 color
+        memset(heap_framebuffer, color_index, HEAP_BUFFER_SIZE);
+    }
 
     return mp_const_none;
 }
@@ -963,67 +580,109 @@ STATIC MP_DEFINE_CONST_FUN_OBJ_1(picoware_lcd_clear_framebuffer_obj, picoware_lc
 
 STATIC mp_obj_t picoware_lcd_draw_char(size_t n_args, const mp_obj_t *args)
 {
-    // Arguments: x, y, char, color565
-    if (n_args != 4)
+    // Arguments: x, y, char, color565, font_size
+    if (n_args < 4)
     {
-        mp_raise_ValueError(MP_ERROR_TEXT("draw_char requires 4 arguments"));
+        mp_raise_ValueError(MP_ERROR_TEXT("draw_char requires at least 4 arguments"));
     }
 
     int x = mp_obj_get_int(args[0]);
     int y = mp_obj_get_int(args[1]);
     int char_code = mp_obj_get_int(args[2]);
     uint16_t color = mp_obj_get_int(args[3]);
+    int font_size = (n_args >= 5) ? mp_obj_get_int(args[4]) : FONT_DEFAULT;
 
-    // Bounds check
-    if (x < 0 || x + CHAR_WIDTH > DISPLAY_WIDTH ||
-        y < 0 || y + FONT_HEIGHT > DISPLAY_HEIGHT)
+    // Validate character code
+    if (char_code < 32 || char_code > 126)
+    {
+        return mp_const_none; // Character out of range
+    }
+
+    // Get font dimensions dynamically
+    uint8_t char_width = font_get_width(font_size);
+    uint8_t char_height = font_get_height(font_size);
+    uint8_t bytes_per_row = (char_width + 7) / 8;
+
+    // Bounds check with actual font dimensions
+    if (x < 0 || x + char_width > DISPLAY_WIDTH ||
+        y < 0 || y + char_height > DISPLAY_HEIGHT)
     {
         return mp_const_none; // Character would be out of bounds
     }
 
-    // Validate character code
-    if (char_code < 0 || char_code > 127)
+    uint8_t color_index = color565_to_332(color);
+    const uint8_t *char_data = font_get_character(font_size, char_code);
+
+    if (char_data == NULL)
     {
-        char_code = 127; // Use default character for out of range
+        return mp_const_none; // Invalid character
     }
 
-    uint8_t color_index = color565_to_332(color);
-    const uint8_t *font_data = get_font_data();
-    const uint8_t *char_data = &font_data[char_code * FONT_WIDTH];
-
-    // Render character bitmap
-    for (int col = 0; col < FONT_WIDTH; col++)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        uint8_t column_data = char_data[col];
-        for (int row = 0; row < FONT_HEIGHT; row++)
+        // Render character bitmap using PSRAM writes (row-by-row)
+        for (uint8_t row = 0; row < char_height; row++)
         {
-            if (column_data & (1 << row))
+            const uint8_t *row_data = &char_data[row * bytes_per_row];
+            for (uint8_t col = 0; col < char_width; col++)
             {
-                int buffer_index = (y + row) * DISPLAY_WIDTH + (x + col);
-                static_framebuffer[buffer_index] = color_index;
+                uint8_t byte_index = col / 8;
+                uint8_t bit_index = 7 - (col % 8); // MSB = leftmost pixel
+
+                if (row_data[byte_index] & (1 << bit_index))
+                {
+                    uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + ((y + row) * PSRAM_ROW_SIZE) + (x + col);
+                    psram_qspi_write8(&psram_instance, addr, color_index);
+                }
+            }
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Render character bitmap to RGB332 heap framebuffer (row-by-row)
+        for (uint8_t row = 0; row < char_height; row++)
+        {
+            const uint8_t *row_data = &char_data[row * bytes_per_row];
+            for (uint8_t col = 0; col < char_width; col++)
+            {
+                uint8_t byte_index = col / 8;
+                uint8_t bit_index = 7 - (col % 8); // MSB = leftmost pixel
+
+                if (row_data[byte_index] & (1 << bit_index))
+                {
+                    heap_framebuffer[(y + row) * DISPLAY_WIDTH + (x + col)] = color_index;
+                }
             }
         }
     }
 
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_char_obj, 4, 4, picoware_lcd_draw_char);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_char_obj, 4, 5, picoware_lcd_draw_char);
 
 STATIC mp_obj_t picoware_lcd_draw_text(size_t n_args, const mp_obj_t *args)
 {
-    // Arguments: x, y, text_string, color565
-    if (n_args != 4)
+    // Arguments: x, y, text_string, color565, font_size (optional)
+    if (n_args < 4)
     {
-        mp_raise_ValueError(MP_ERROR_TEXT("draw_text requires 4 arguments"));
+        mp_raise_ValueError(MP_ERROR_TEXT("draw_text requires at least 4 arguments"));
     }
 
     int start_x = mp_obj_get_int(args[0]);
     int start_y = mp_obj_get_int(args[1]);
     const char *text = mp_obj_str_get_str(args[2]);
     uint16_t color = mp_obj_get_int(args[3]);
+    int font_size = (n_args >= 5) ? mp_obj_get_int(args[4]) : FONT_DEFAULT;
 
     uint8_t color_index = color565_to_332(color);
-    const uint8_t *font_data = get_font_data();
+
+    // Get font dimensions dynamically
+    uint8_t char_width = font_get_width(font_size);
+    uint8_t char_height = font_get_height(font_size);
+    uint8_t bytes_per_row = (char_width + 7) / 8;
+    uint8_t char_spacing = char_width + 1; // Add 1 pixel spacing
+
+    const uint8_t *font_data = font_get_data(font_size);
 
     int current_x = start_x;
     int current_y = start_y;
@@ -1037,27 +696,27 @@ STATIC mp_obj_t picoware_lcd_draw_text(size_t n_args, const mp_obj_t *args)
         {
             // Handle newline
             current_x = start_x;
-            current_y += FONT_HEIGHT;
+            current_y += char_height;
             continue;
         }
         else if (ch == ' ')
         {
             // Handle space - just advance position
-            current_x += CHAR_WIDTH;
+            current_x += char_spacing;
             continue;
         }
 
         // Check bounds
-        if (current_y + FONT_HEIGHT > DISPLAY_HEIGHT)
+        if (current_y + char_height > DISPLAY_HEIGHT)
         {
             break; // Text goes below screen
         }
-        if (current_x + CHAR_WIDTH > DISPLAY_WIDTH)
+        if (current_x + char_width > DISPLAY_WIDTH)
         {
             // Wrap to next line
             current_x = start_x;
-            current_y += FONT_HEIGHT;
-            if (current_y + FONT_HEIGHT > DISPLAY_HEIGHT)
+            current_y += char_height;
+            if (current_y + char_height > DISPLAY_HEIGHT)
             {
                 break;
             }
@@ -1065,40 +724,70 @@ STATIC mp_obj_t picoware_lcd_draw_text(size_t n_args, const mp_obj_t *args)
 
         // Validate character
         int char_code = (int)ch;
-        if (char_code < 0 || char_code > 127)
+        if (char_code < 32 || char_code > 126)
         {
-            char_code = 127; // Default character
+            char_code = 32; // Default to space for invalid characters
         }
 
-        const uint8_t *char_data = &font_data[char_code * FONT_WIDTH];
+        // Font table starts at ASCII 32, so subtract 32 to get index
+        const uint8_t *char_data = &font_data[(char_code - 32) * char_height * bytes_per_row];
 
-        // Render character bitmap
-        for (int col = 0; col < FONT_WIDTH; col++)
+        if (lcd_mode == LCD_MODE_PSRAM)
         {
-            uint8_t column_data = char_data[col];
-            for (int row = 0; row < FONT_HEIGHT; row++)
+            // Render character bitmap using PSRAM writes (row-by-row)
+            for (uint8_t row = 0; row < char_height; row++)
             {
-                if (column_data & (1 << row))
+                const uint8_t *row_data = &char_data[row * bytes_per_row];
+                for (uint8_t col = 0; col < char_width; col++)
                 {
-                    int px = current_x + col;
-                    int py = current_y + row;
-                    if (px < DISPLAY_WIDTH && py < DISPLAY_HEIGHT)
+                    uint8_t byte_index = col / 8;
+                    uint8_t bit_index = 7 - (col % 8); // MSB = leftmost pixel
+
+                    if (row_data[byte_index] & (1 << bit_index))
                     {
-                        int buffer_index = py * DISPLAY_WIDTH + px;
-                        static_framebuffer[buffer_index] = color_index;
+                        int px = current_x + col;
+                        int py = current_y + row;
+                        if (px < DISPLAY_WIDTH && py < DISPLAY_HEIGHT)
+                        {
+                            uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px;
+                            psram_qspi_write8(&psram_instance, addr, color_index);
+                        }
+                    }
+                }
+            }
+        }
+        else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+        {
+            // Render character bitmap to RGB332 heap framebuffer (row-by-row)
+            for (uint8_t row = 0; row < char_height; row++)
+            {
+                const uint8_t *row_data = &char_data[row * bytes_per_row];
+                for (uint8_t col = 0; col < char_width; col++)
+                {
+                    uint8_t byte_index = col / 8;
+                    uint8_t bit_index = 7 - (col % 8); // MSB = leftmost pixel
+
+                    if (row_data[byte_index] & (1 << bit_index))
+                    {
+                        int px = current_x + col;
+                        int py = current_y + row;
+                        if (px < DISPLAY_WIDTH && py < DISPLAY_HEIGHT)
+                        {
+                            heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+                        }
                     }
                 }
             }
         }
 
-        current_x += CHAR_WIDTH;
+        current_x += char_spacing;
     }
 
     return mp_const_none;
 }
-STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_text_obj, 4, 4, picoware_lcd_draw_text);
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_text_obj, 4, 5, picoware_lcd_draw_text);
 
-// Bresenham line algorithm
+// Bresenham line algorithm (supports both modes)
 STATIC mp_obj_t picoware_lcd_draw_line_custom(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: x1, y1, x2, y2, color565
@@ -1115,36 +804,93 @@ STATIC mp_obj_t picoware_lcd_draw_line_custom(size_t n_args, const mp_obj_t *arg
 
     uint8_t color_index = color565_to_332(color);
 
-    // Bresenham's line algorithm (from draw.cpp)
+    // Fast path for horizontal lines
+    if (y1 == y2)
+    {
+        if (x1 > x2)
+        {
+            int temp = x1;
+            x1 = x2;
+            x2 = temp;
+        }
+        if (lcd_mode == LCD_MODE_PSRAM)
+        {
+            psram_write_hline(x1, y1, x2 - x1 + 1, color_index);
+        }
+        else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+        {
+            // Clip to screen bounds
+            if (y1 < 0 || y1 >= DISPLAY_HEIGHT)
+                return mp_const_none;
+            if (x1 < 0)
+                x1 = 0;
+            if (x2 >= DISPLAY_WIDTH)
+                x2 = DISPLAY_WIDTH - 1;
+            if (x1 > x2)
+                return mp_const_none;
+            memset(&heap_framebuffer[y1 * DISPLAY_WIDTH + x1], color_index, x2 - x1 + 1);
+        }
+        return mp_const_none;
+    }
+
+    // Bresenham's line algorithm
     int dx = abs(x2 - x1);
     int dy = abs(y2 - y1);
     int sx = (x1 < x2) ? 1 : -1;
     int sy = (y1 < y2) ? 1 : -1;
     int err = dx - dy;
 
-    while (true)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        // Draw pixel if within bounds
-        if (x1 >= 0 && x1 < DISPLAY_WIDTH && y1 >= 0 && y1 < DISPLAY_HEIGHT)
+        while (true)
         {
-            int buffer_index = y1 * DISPLAY_WIDTH + x1;
-            static_framebuffer[buffer_index] = color_index;
-        }
+            // Draw pixel if within bounds using PSRAM write
+            if (x1 >= 0 && x1 < DISPLAY_WIDTH && y1 >= 0 && y1 < DISPLAY_HEIGHT)
+            {
+                uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (y1 * PSRAM_ROW_SIZE) + x1;
+                psram_qspi_write8(&psram_instance, addr, color_index);
+            }
 
-        // Check if we've reached the end point
-        if (x1 == x2 && y1 == y2)
-            break;
+            if (x1 == x2 && y1 == y2)
+                break;
 
-        int e2 = 2 * err;
-        if (e2 > -dy)
-        {
-            err -= dy;
-            x1 += sx;
+            int e2 = 2 * err;
+            if (e2 > -dy)
+            {
+                err -= dy;
+                x1 += sx;
+            }
+            if (e2 < dx)
+            {
+                err += dx;
+                y1 += sy;
+            }
         }
-        if (e2 < dx)
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        while (true)
         {
-            err += dx;
-            y1 += sy;
+            // Draw pixel if within bounds using RGB332 heap framebuffer
+            if (x1 >= 0 && x1 < DISPLAY_WIDTH && y1 >= 0 && y1 < DISPLAY_HEIGHT)
+            {
+                heap_framebuffer[y1 * DISPLAY_WIDTH + x1] = color_index;
+            }
+
+            if (x1 == x2 && y1 == y2)
+                break;
+
+            int e2 = 2 * err;
+            if (e2 > -dy)
+            {
+                err -= dy;
+                x1 += sx;
+            }
+            if (e2 < dx)
+            {
+                err += dx;
+                y1 += sy;
+            }
         }
     }
 
@@ -1152,6 +898,7 @@ STATIC mp_obj_t picoware_lcd_draw_line_custom(size_t n_args, const mp_obj_t *arg
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_line_custom_obj, 5, 5, picoware_lcd_draw_line_custom);
 
+// Draw circle outline using midpoint algorithm (supports both modes)
 STATIC mp_obj_t picoware_lcd_draw_circle(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: center_x, center_y, radius, color565
@@ -1168,57 +915,156 @@ STATIC mp_obj_t picoware_lcd_draw_circle(size_t n_args, const mp_obj_t *args)
     if (radius <= 0 || radius > 100) // Limit radius to prevent issues
         return mp_const_none;
 
-    uint8_t color_index = color565_to_332(color);
-
-    // Simple Bresenham circle with minimal bounds checking
+    // Midpoint circle algorithm
     int x = 0;
     int y = radius;
     int d = 3 - 2 * radius;
 
-    while (x <= y)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        // Only plot points that are clearly within bounds (fast check)
-        int px1 = center_x + x, py1 = center_y + y;
-        int px2 = center_x - x, py2 = center_y + y;
-        int px3 = center_x + x, py3 = center_y - y;
-        int px4 = center_x - x, py4 = center_y - y;
-        int px5 = center_x + y, py5 = center_y + x;
-        int px6 = center_x - y, py6 = center_y + x;
-        int px7 = center_x + y, py7 = center_y - x;
-        int px8 = center_x - y, py8 = center_y - x;
-
-        // Quick bounds check and plot
-        if (px1 >= 0 && px1 < DISPLAY_WIDTH && py1 >= 0 && py1 < DISPLAY_HEIGHT)
-            static_framebuffer[py1 * DISPLAY_WIDTH + px1] = color_index;
-        if (px2 >= 0 && px2 < DISPLAY_WIDTH && py2 >= 0 && py2 < DISPLAY_HEIGHT)
-            static_framebuffer[py2 * DISPLAY_WIDTH + px2] = color_index;
-        if (px3 >= 0 && px3 < DISPLAY_WIDTH && py3 >= 0 && py3 < DISPLAY_HEIGHT)
-            static_framebuffer[py3 * DISPLAY_WIDTH + px3] = color_index;
-        if (px4 >= 0 && px4 < DISPLAY_WIDTH && py4 >= 0 && py4 < DISPLAY_HEIGHT)
-            static_framebuffer[py4 * DISPLAY_WIDTH + px4] = color_index;
-        if (px5 >= 0 && px5 < DISPLAY_WIDTH && py5 >= 0 && py5 < DISPLAY_HEIGHT)
-            static_framebuffer[py5 * DISPLAY_WIDTH + px5] = color_index;
-        if (px6 >= 0 && px6 < DISPLAY_WIDTH && py6 >= 0 && py6 < DISPLAY_HEIGHT)
-            static_framebuffer[py6 * DISPLAY_WIDTH + px6] = color_index;
-        if (px7 >= 0 && px7 < DISPLAY_WIDTH && py7 >= 0 && py7 < DISPLAY_HEIGHT)
-            static_framebuffer[py7 * DISPLAY_WIDTH + px7] = color_index;
-        if (px8 >= 0 && px8 < DISPLAY_WIDTH && py8 >= 0 && py8 < DISPLAY_HEIGHT)
-            static_framebuffer[py8 * DISPLAY_WIDTH + px8] = color_index;
-
-        if (d < 0)
-            d += 4 * x + 6;
-        else
+        uint8_t color_index = color565_to_332(color);
+        while (x <= y)
         {
-            d += 4 * (x - y) + 10;
-            y--;
+            // Write all 8 octant pixels using PSRAM write8
+            int px, py;
+
+            px = center_x + x;
+            py = center_y + y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x - x;
+            py = center_y + y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x + x;
+            py = center_y - y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x - x;
+            py = center_y - y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x + y;
+            py = center_y + x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x - y;
+            py = center_y + x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x + y;
+            py = center_y - x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            px = center_x - y;
+            py = center_y - x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                psram_qspi_write8(&psram_instance, PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px, color_index);
+
+            if (d < 0)
+                d += 4 * x + 6;
+            else
+            {
+                d += 4 * (x - y) + 10;
+                y--;
+            }
+            x++;
         }
-        x++;
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        uint8_t color_index = color565_to_332(color);
+        while (x <= y)
+        {
+            // Write all 8 octant pixels to RGB332 heap framebuffer
+            int px, py;
+
+            px = center_x + x;
+            py = center_y + y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x - x;
+            py = center_y + y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x + x;
+            py = center_y - y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x - x;
+            py = center_y - y;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x + y;
+            py = center_y + x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x - y;
+            py = center_y + x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x + y;
+            py = center_y - x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            px = center_x - y;
+            py = center_y - x;
+            if (px >= 0 && px < DISPLAY_WIDTH && py >= 0 && py < DISPLAY_HEIGHT)
+                heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+
+            if (d < 0)
+                d += 4 * x + 6;
+            else
+            {
+                d += 4 * (x - y) + 10;
+                y--;
+            }
+            x++;
+        }
     }
 
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_circle_obj, 4, 4, picoware_lcd_draw_circle);
 
+// Helper to write a horizontal line for HEAP mode
+static void heap_write_hline(int x, int y, int length, uint8_t color_index)
+{
+    if (y < 0 || y >= DISPLAY_HEIGHT || length <= 0 || heap_framebuffer == NULL)
+        return;
+
+    // Clip to screen bounds
+    if (x < 0)
+    {
+        length += x;
+        x = 0;
+    }
+    if (x + length > DISPLAY_WIDTH)
+    {
+        length = DISPLAY_WIDTH - x;
+    }
+    if (length <= 0)
+        return;
+
+    uint8_t *row = &heap_framebuffer[y * DISPLAY_WIDTH + x];
+    memset(row, color_index, length);
+}
+
+// Fill circle using horizontal line spans (supports both modes)
 STATIC mp_obj_t picoware_lcd_fill_circle(size_t n_args, const mp_obj_t *args)
 {
     // Arguments: center_x, center_y, radius, color565
@@ -1232,49 +1078,231 @@ STATIC mp_obj_t picoware_lcd_fill_circle(size_t n_args, const mp_obj_t *args)
     int radius = mp_obj_get_int(args[2]);
     uint16_t color = mp_obj_get_int(args[3]);
 
-    if (radius <= 0 || radius > 50) // Limit radius to prevent performance issues
+    if (radius <= 0 || radius > 100)
         return mp_const_none;
 
-    uint8_t color_index = color565_to_332(color);
-    int radius_squared = radius * radius;
+    // Midpoint algorithm with horizontal line fills
+    int x = 0;
+    int y = radius;
+    int d = 3 - 2 * radius;
 
-    // Very tight bounding box with safety margins
-    int start_x = center_x - radius;
-    int end_x = center_x + radius;
-    int start_y = center_y - radius;
-    int end_y = center_y + radius;
-
-    // Clamp to display bounds
-    if (start_x < 0)
-        start_x = 0;
-    if (end_x >= DISPLAY_WIDTH)
-        end_x = DISPLAY_WIDTH - 1;
-    if (start_y < 0)
-        start_y = 0;
-    if (end_y >= DISPLAY_HEIGHT)
-        end_y = DISPLAY_HEIGHT - 1;
-
-    // Fill using distance check - optimized for small circles
-    for (int y = start_y; y <= end_y; y++)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        int dy = y - center_y;
-        int dy_squared = dy * dy;
-
-        for (int x = start_x; x <= end_x; x++)
+        uint8_t color_index = color565_to_332(color);
+        while (x <= y)
         {
-            int dx = x - center_x;
-            int distance_squared = dx * dx + dy_squared;
+            // Draw horizontal lines for each row of the circle
+            psram_write_hline(center_x - x, center_y + y, 2 * x + 1, color_index);
+            psram_write_hline(center_x - x, center_y - y, 2 * x + 1, color_index);
+            psram_write_hline(center_x - y, center_y + x, 2 * y + 1, color_index);
+            psram_write_hline(center_x - y, center_y - x, 2 * y + 1, color_index);
 
-            if (distance_squared <= radius_squared)
+            if (d < 0)
             {
-                static_framebuffer[y * DISPLAY_WIDTH + x] = color_index;
+                d += 4 * x + 6;
             }
+            else
+            {
+                d += 4 * (x - y) + 10;
+                y--;
+            }
+            x++;
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        uint8_t color_index = color565_to_332(color);
+        while (x <= y)
+        {
+            // Draw horizontal lines for each row of the circle
+            heap_write_hline(center_x - x, center_y + y, 2 * x + 1, color_index);
+            heap_write_hline(center_x - x, center_y - y, 2 * x + 1, color_index);
+            heap_write_hline(center_x - y, center_y + x, 2 * y + 1, color_index);
+            heap_write_hline(center_x - y, center_y - x, 2 * y + 1, color_index);
+
+            if (d < 0)
+            {
+                d += 4 * x + 6;
+            }
+            else
+            {
+                d += 4 * (x - y) + 10;
+                y--;
+            }
+            x++;
         }
     }
 
     return mp_const_none;
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_fill_circle_obj, 4, 4, picoware_lcd_fill_circle);
+
+// Fill rounded rectangle
+STATIC mp_obj_t picoware_lcd_fill_round_rectangle(size_t n_args, const mp_obj_t *args)
+{
+    // Arguments: x, y, width, height, radius, color565
+    if (n_args != 6)
+    {
+        mp_raise_ValueError(MP_ERROR_TEXT("fill_round_rectangle requires 6 arguments"));
+    }
+
+    int x = mp_obj_get_int(args[0]);
+    int y = mp_obj_get_int(args[1]);
+    int width = mp_obj_get_int(args[2]);
+    int height = mp_obj_get_int(args[3]);
+    int radius = mp_obj_get_int(args[4]);
+    uint16_t color = mp_obj_get_int(args[5]);
+
+    if (width <= 0 || height <= 0 || radius <= 0)
+        return mp_const_none;
+
+    // Clip to screen bounds
+    if (x < 0)
+    {
+        width += x;
+        x = 0;
+    }
+    if (y < 0)
+    {
+        height += y;
+        y = 0;
+    }
+    if (x + width > DISPLAY_WIDTH)
+    {
+        width = DISPLAY_WIDTH - x;
+    }
+    if (y + height > DISPLAY_HEIGHT)
+    {
+        height = DISPLAY_HEIGHT - y;
+    }
+
+    if (width <= 0 || height <= 0)
+        return mp_const_none;
+
+    // Calculate effective radius considering clipping
+    int effective_radius = radius;
+    if (effective_radius > width / 2)
+        effective_radius = width / 2;
+    if (effective_radius > height / 2)
+        effective_radius = height / 2;
+
+    uint8_t color_index = color565_to_332(color);
+
+    // Pre-calculate corner centers
+    int tl_cx = x + effective_radius;
+    int tl_cy = y + effective_radius;
+    int tr_cx = x + width - effective_radius;
+    int tr_cy = y + effective_radius;
+    int bl_cx = x + effective_radius;
+    int bl_cy = y + height - effective_radius;
+    int br_cx = x + width - effective_radius;
+    int br_cy = y + height - effective_radius;
+
+    int radius_sq = effective_radius * effective_radius;
+
+    if (lcd_mode == LCD_MODE_PSRAM)
+    {
+        for (int py = y; py < y + height; py++)
+        {
+            for (int px = x; px < x + width; px++)
+            {
+                bool in_corner = false;
+
+                // Check if pixel is in one of the corner exclusion zones
+                if (px < tl_cx && py < tl_cy)
+                {
+                    // Top-left corner
+                    int dx = px - tl_cx;
+                    int dy = py - tl_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px >= tr_cx && py < tr_cy)
+                {
+                    // Top-right corner
+                    int dx = px - tr_cx;
+                    int dy = py - tr_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px < bl_cx && py >= bl_cy)
+                {
+                    // Bottom-left corner
+                    int dx = px - bl_cx;
+                    int dy = py - bl_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px >= br_cx && py >= br_cy)
+                {
+                    // Bottom-right corner
+                    int dx = px - br_cx;
+                    int dy = py - br_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+
+                if (!in_corner)
+                {
+                    uint32_t addr = PSRAM_FRAMEBUFFER_ADDR + (py * PSRAM_ROW_SIZE) + px;
+                    psram_qspi_write8(&psram_instance, addr, color_index);
+                }
+            }
+        }
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        for (int py = y; py < y + height; py++)
+        {
+            for (int px = x; px < x + width; px++)
+            {
+                bool in_corner = false;
+
+                // Check if pixel is in one of the corner exclusion zones
+                if (px < tl_cx && py < tl_cy)
+                {
+                    // Top-left corner
+                    int dx = px - tl_cx;
+                    int dy = py - tl_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px >= tr_cx && py < tr_cy)
+                {
+                    // Top-right corner
+                    int dx = px - tr_cx;
+                    int dy = py - tr_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px < bl_cx && py >= bl_cy)
+                {
+                    // Bottom-left corner
+                    int dx = px - bl_cx;
+                    int dy = py - bl_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+                else if (px >= br_cx && py >= br_cy)
+                {
+                    // Bottom-right corner
+                    int dx = px - br_cx;
+                    int dy = py - br_cy;
+                    if (dx * dx + dy * dy > radius_sq)
+                        in_corner = true;
+                }
+
+                if (!in_corner)
+                {
+                    heap_framebuffer[py * DISPLAY_WIDTH + px] = color_index;
+                }
+            }
+        }
+    }
+
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_fill_round_rectangle_obj, 6, 6, picoware_lcd_fill_round_rectangle);
 
 // Helper function to swap two floats
 STATIC void swap_float(float *a, float *b)
@@ -1404,16 +1432,15 @@ STATIC mp_obj_t picoware_lcd_fill_triangle(size_t n_args, const mp_obj_t *args)
             int start_x = (int)(x_left < x_right ? x_left : x_right);
             int end_x = (int)(x_left > x_right ? x_left : x_right);
 
-            // Clamp to screen bounds
-            if (start_x < 0)
-                start_x = 0;
-            if (end_x >= DISPLAY_WIDTH)
-                end_x = DISPLAY_WIDTH - 1;
-
-            // Draw the horizontal line
-            for (int x = start_x; x <= end_x; x++)
+            if (lcd_mode == LCD_MODE_PSRAM)
             {
-                static_framebuffer[y * DISPLAY_WIDTH + x] = color_index;
+                // Use optimized horizontal line write for PSRAM
+                psram_write_hline(start_x, y, end_x - start_x + 1, color_index);
+            }
+            else if (lcd_mode == LCD_MODE_HEAP)
+            {
+                // Use HEAP horizontal line write
+                heap_write_hline(start_x, y, end_x - start_x + 1, color_index);
             }
         }
     }
@@ -1422,7 +1449,7 @@ STATIC mp_obj_t picoware_lcd_fill_triangle(size_t n_args, const mp_obj_t *args)
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_fill_triangle_obj, 7, 7, picoware_lcd_fill_triangle);
 
-// Draw an 8-bit byte array image
+// Draw an 8-bit byte array image to framebuffer (supports both modes)
 // Args: x (int), y (int), width (int), height (int), byte_data (bytes/bytearray), invert (bool)
 STATIC mp_obj_t picoware_lcd_draw_image_bytearray(size_t n_args, const mp_obj_t *args)
 {
@@ -1468,24 +1495,67 @@ STATIC mp_obj_t picoware_lcd_draw_image_bytearray(size_t n_args, const mp_obj_t 
         return mp_const_none;
     }
 
-    // Copy line by line
-    for (int row = 0; row < copy_height; row++)
+    if (lcd_mode == LCD_MODE_PSRAM)
     {
-        int src_row_start = (src_y + row) * width + src_x;
-        int dst_row_start = (dst_y + row) * DISPLAY_WIDTH + dst_x;
-
-        if (invert)
+        // Copy line by line to PSRAM
+        for (int row = 0; row < copy_height; row++)
         {
-            // Invert colors while copying
-            for (int col = 0; col < copy_width; col++)
+            int src_row_start = (src_y + row) * width + src_x;
+            uint32_t psram_addr = PSRAM_FRAMEBUFFER_ADDR + ((dst_y + row) * PSRAM_ROW_SIZE) + dst_x;
+
+            if (invert)
             {
-                static_framebuffer[dst_row_start + col] = 255 - byte_data[src_row_start + col];
+                // Invert colors while copying - use line buffer
+                for (int col = 0; col < copy_width; col++)
+                {
+                    line_buffer[col] = 255 - byte_data[src_row_start + col];
+                }
+
+                // Write inverted data to PSRAM in chunks
+                uint32_t remaining = copy_width;
+                uint32_t offset = 0;
+                while (remaining > 0)
+                {
+                    uint32_t chunk_size = (remaining > PSRAM_CHUNK_SIZE) ? PSRAM_CHUNK_SIZE : remaining;
+                    psram_qspi_write(&psram_instance, psram_addr + offset, line_buffer + offset, chunk_size);
+                    offset += chunk_size;
+                    remaining -= chunk_size;
+                }
+            }
+            else
+            {
+                // Direct write to PSRAM in chunks
+                uint32_t remaining = copy_width;
+                uint32_t offset = 0;
+                while (remaining > 0)
+                {
+                    uint32_t chunk_size = (remaining > PSRAM_CHUNK_SIZE) ? PSRAM_CHUNK_SIZE : remaining;
+                    psram_qspi_write(&psram_instance, psram_addr + offset, byte_data + src_row_start + offset, chunk_size);
+                    offset += chunk_size;
+                    remaining -= chunk_size;
+                }
             }
         }
-        else
+    }
+    else if (lcd_mode == LCD_MODE_HEAP && heap_framebuffer != NULL)
+    {
+        // Copy line by line to heap framebuffer (already RGB332)
+        for (int row = 0; row < copy_height; row++)
         {
-            // Direct memory copy for the row
-            memcpy(&static_framebuffer[dst_row_start], &byte_data[src_row_start], copy_width);
+            int src_row_start = (src_y + row) * width + src_x;
+            uint8_t *dst_row = &heap_framebuffer[(dst_y + row) * DISPLAY_WIDTH + dst_x];
+
+            if (invert)
+            {
+                for (int col = 0; col < copy_width; col++)
+                {
+                    dst_row[col] = 255 - byte_data[src_row_start + col];
+                }
+            }
+            else
+            {
+                memcpy(dst_row, &byte_data[src_row_start], copy_width);
+            }
         }
     }
 
@@ -1493,19 +1563,95 @@ STATIC mp_obj_t picoware_lcd_draw_image_bytearray(size_t n_args, const mp_obj_t 
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(picoware_lcd_draw_image_bytearray_obj, 5, 6, picoware_lcd_draw_image_bytearray);
 
+// Set LCD mode (0=PSRAM, 1=HEAP)
+// This allows switching modes after initialization
+STATIC mp_obj_t picoware_lcd_set_mode(mp_obj_t mode_obj)
+{
+    uint8_t new_mode = mp_obj_get_int(mode_obj);
+    if (new_mode > LCD_MODE_HEAP)
+    {
+        mp_raise_ValueError(MP_ERROR_TEXT("Invalid mode: 0=PSRAM, 1=HEAP"));
+    }
+
+    if (new_mode == lcd_mode)
+    {
+        return mp_const_none; // Already in this mode
+    }
+
+    if (new_mode == LCD_MODE_PSRAM)
+    {
+        // Switch to PSRAM mode
+        if (!psram_initialized)
+        {
+            psram_instance = psram_qspi_init(pio1, -1, 1.0f);
+            psram_initialized = true;
+        }
+
+        // Free HEAP buffer if it was allocated
+        free_heap_framebuffer();
+    }
+    else if (new_mode == LCD_MODE_HEAP)
+    {
+        // Switch to HEAP mode
+        if (!allocate_heap_framebuffer())
+        {
+            mp_raise_msg(&mp_type_MemoryError, MP_ERROR_TEXT("Failed to allocate HEAP framebuffer"));
+        }
+        // Clear the framebuffer to black
+        memset(heap_framebuffer, 0, HEAP_BUFFER_SIZE);
+
+        // deinit psram
+        if (psram_initialized)
+        {
+            clear_psram_framebuffer(0);
+            psram_qspi_deinit(&psram_instance);
+            psram_initialized = false;
+        }
+    }
+
+    lcd_mode = new_mode;
+    return mp_const_none;
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(picoware_lcd_set_mode_obj, picoware_lcd_set_mode);
+
+// Get current LCD mode
+STATIC mp_obj_t picoware_lcd_get_mode(void)
+{
+    return mp_obj_new_int(lcd_mode);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_lcd_get_mode_obj, picoware_lcd_get_mode);
+
+// Check if PSRAM framebuffer is initialized
+STATIC mp_obj_t picoware_lcd_is_psram_ready(void)
+{
+    return mp_obj_new_bool(psram_initialized);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_0(picoware_lcd_is_psram_ready_obj, picoware_lcd_is_psram_ready);
+
+// Get PSRAM instance pointer
+psram_qspi_inst_t *picoware_get_psram_instance(void)
+{
+    return psram_initialized ? &psram_instance : NULL;
+}
+
 // Module globals table
 STATIC const mp_rom_map_elem_t picoware_lcd_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_picoware_lcd)},
 
     // Display control
+    {MP_ROM_QSTR(MP_QSTR_deinit), MP_ROM_PTR(&picoware_lcd_deinit_obj)},
     {MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&picoware_lcd_init_obj)},
     {MP_ROM_QSTR(MP_QSTR_clear_screen), MP_ROM_PTR(&picoware_lcd_clear_screen_obj)},
     {MP_ROM_QSTR(MP_QSTR_display_on), MP_ROM_PTR(&picoware_lcd_display_on_obj)},
     {MP_ROM_QSTR(MP_QSTR_display_off), MP_ROM_PTR(&picoware_lcd_display_off_obj)},
+    {MP_ROM_QSTR(MP_QSTR_is_psram_ready), MP_ROM_PTR(&picoware_lcd_is_psram_ready_obj)},
 
-    // Blitting functions
-    {MP_ROM_QSTR(MP_QSTR_blit_8bit), MP_ROM_PTR(&picoware_lcd_blit_8bit_obj)},
-    {MP_ROM_QSTR(MP_QSTR_blit_8bit_fullscreen), MP_ROM_PTR(&picoware_lcd_blit_8bit_fullscreen_obj)},
+    // Mode control
+    {MP_ROM_QSTR(MP_QSTR_set_mode), MP_ROM_PTR(&picoware_lcd_set_mode_obj)},
+    {MP_ROM_QSTR(MP_QSTR_get_mode), MP_ROM_PTR(&picoware_lcd_get_mode_obj)},
+
+    // swap
+    {MP_ROM_QSTR(MP_QSTR_swap), MP_ROM_PTR(&picoware_lcd_swap_obj)},
 
     // Drawing functions
     {MP_ROM_QSTR(MP_QSTR_draw_pixel), MP_ROM_PTR(&picoware_lcd_draw_pixel_obj)},
@@ -1514,6 +1660,7 @@ STATIC const mp_rom_map_elem_t picoware_lcd_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_draw_line_custom), MP_ROM_PTR(&picoware_lcd_draw_line_custom_obj)},
     {MP_ROM_QSTR(MP_QSTR_draw_circle), MP_ROM_PTR(&picoware_lcd_draw_circle_obj)},
     {MP_ROM_QSTR(MP_QSTR_fill_circle), MP_ROM_PTR(&picoware_lcd_fill_circle_obj)},
+    {MP_ROM_QSTR(MP_QSTR_fill_round_rectangle), MP_ROM_PTR(&picoware_lcd_fill_round_rectangle_obj)},
     {MP_ROM_QSTR(MP_QSTR_fill_triangle), MP_ROM_PTR(&picoware_lcd_fill_triangle_obj)},
     {MP_ROM_QSTR(MP_QSTR_clear_framebuffer), MP_ROM_PTR(&picoware_lcd_clear_framebuffer_obj)},
     {MP_ROM_QSTR(MP_QSTR_draw_image_bytearray), MP_ROM_PTR(&picoware_lcd_draw_image_bytearray_obj)},
@@ -1528,6 +1675,14 @@ STATIC const mp_rom_map_elem_t picoware_lcd_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR_CHAR_WIDTH), MP_ROM_INT(CHAR_WIDTH)},
     {MP_ROM_QSTR(MP_QSTR_CHAR_HEIGHT), MP_ROM_INT(CHAR_HEIGHT)},
     {MP_ROM_QSTR(MP_QSTR_FONT_HEIGHT), MP_ROM_INT(FONT_HEIGHT)},
+    {MP_ROM_QSTR(MP_QSTR_PSRAM_FRAMEBUFFER_ADDR), MP_ROM_INT(PSRAM_FRAMEBUFFER_ADDR)},
+    {MP_ROM_QSTR(MP_QSTR_PSRAM_BUFFER_SIZE), MP_ROM_INT(PSRAM_BUFFER_SIZE)},
+
+    // Mode constants
+    {MP_ROM_QSTR(MP_QSTR_MODE_PSRAM), MP_ROM_INT(LCD_MODE_PSRAM)},
+    {MP_ROM_QSTR(MP_QSTR_MODE_HEAP), MP_ROM_INT(LCD_MODE_HEAP)},
+
+    {MP_ROM_QSTR(MP_QSTR_FONT_DEFAULT), MP_ROM_INT(FONT_DEFAULT)},
 };
 STATIC MP_DEFINE_CONST_DICT(picoware_lcd_module_globals, picoware_lcd_module_globals_table);
 

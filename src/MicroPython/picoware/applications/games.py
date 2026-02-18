@@ -9,14 +9,16 @@ def start(view_manager) -> bool:
     from picoware.system.app_loader import AppLoader
 
     if not view_manager.has_sd_card:
-        print("Games app requires an SD card")
+        view_manager.alert(
+            "Games app requires an SD card.",
+            False,
+        )
         return False
 
     # create games folder if it doesn't exist
-    view_manager.get_storage().mkdir("picoware/apps/games")
+    view_manager.storage.mkdir("picoware/apps/games")
 
     global _games
-    global _games_index
     global _app_loader
 
     if _app_loader:
@@ -32,10 +34,10 @@ def start(view_manager) -> bool:
         "Games",
         0,
         view_manager.draw.size.y,
-        view_manager.get_foreground_color(),
-        view_manager.get_background_color(),
-        view_manager.get_selected_color(),
-        view_manager.get_foreground_color(),
+        view_manager.foreground_color,
+        view_manager.background_color,
+        view_manager.selected_color,
+        view_manager.foreground_color,
         2,
     )
     _app_loader = AppLoader(view_manager)
@@ -61,13 +63,13 @@ def run(view_manager) -> None:
         BUTTON_RIGHT,
     )
 
-    global _games_index, _app_loader
+    global _games_index
 
     if not _games:
         return
 
     input_manager = view_manager.input_manager
-    button: int = input_manager.get_last_button()
+    button: int = input_manager.button
 
     if button in (BUTTON_UP, BUTTON_LEFT):
         input_manager.reset()
@@ -81,29 +83,40 @@ def run(view_manager) -> None:
         view_manager.back()
     elif button == BUTTON_CENTER:
         input_manager.reset()
-        _games_index = _games.get_selected_index()
+        _games_index = _games.selected_index
 
         # Get the selected game name
-        selected_game = _games.get_current_item()
+        selected_game = _games.current_item
 
         if selected_game and _app_loader:
             # Try to load the game
             game_module = _app_loader.load_app(selected_game, "games")
-            if game_module:
-                # Create a view for the game and switch to it
-                game_view_name = f"game_{selected_game}"
+            if game_module is None:
+                view_manager.alert(f'Failed to load game "{selected_game}".')
+                return
+            # Create a view for the game and switch to it
+            game_view_name = f"game_{selected_game}"
+            from utime import ticks_ms
 
-                # Check if view already exists
-                if view_manager.get_view(game_view_name) is None:
-                    game_view = View(
-                        game_view_name,
-                        game_module.run,
-                        game_module.start,
-                        game_module.stop,
-                    )
-                    view_manager.add(game_view)
+            start_time = ticks_ms()
 
-                view_manager.switch_to(game_view_name)
+            # Check if view already exists
+            if view_manager.get_view(game_view_name) is None:
+                game_view = View(
+                    game_view_name,
+                    game_module.run,
+                    game_module.start,
+                    game_module.stop,
+                )
+                print(
+                    f"[Games]: Created view for app {selected_game} after {ticks_ms() - start_time} ms"
+                )
+                view_manager.add(game_view)
+
+            view_manager.switch_to(game_view_name)
+            print(
+                f'[Games]: Switched to view for app "{selected_game}" after {ticks_ms() - start_time} ms'
+            )
 
 
 def stop(view_manager) -> None:

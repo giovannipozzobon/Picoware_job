@@ -30,22 +30,22 @@ def start(view_manager) -> bool:
     _back_hit = False
     _keyboard_started = False
 
-    keyboard = view_manager.get_keyboard()
+    keyboard = view_manager.keyboard
 
     if keyboard is None:
         print("No keyboard available")
         return False
 
     keyboard.set_save_callback(__callback_save)
-    keyboard.set_response(load_wifi_password(view_manager))
-    keyboard.run(force=True)
+    keyboard.response = load_wifi_password(view_manager)
+    keyboard.title = "Enter WiFi Password"
 
-    return True
+    return keyboard.run(force=True)
 
 
 def run(view_manager) -> None:
     """Run the app."""
-    keyboard = view_manager.get_keyboard()
+    keyboard = view_manager.keyboard
     if not keyboard:
         return
 
@@ -62,7 +62,7 @@ def run(view_manager) -> None:
         return
 
     input_manager = view_manager.input_manager
-    button = input_manager.get_last_button()
+    button = input_manager.button
 
     if button == BUTTON_BACK:
         input_manager.reset()
@@ -74,19 +74,19 @@ def run(view_manager) -> None:
 
     if _password_save_requested:
         _password_save_requested = False
-        password = keyboard.get_response()
+        password = keyboard.response
         from picoware.applications.wifi.utils import (
             save_wifi_password,
             save_wifi_settings,
             load_wifi_ssid,
         )
 
-        if not save_wifi_password(view_manager.get_storage(), password):
-            print("Failed to save WiFi password")
+        if not save_wifi_password(view_manager.storage, password):
+            view_manager.alert("Failed to save WiFi password")
         if not save_wifi_settings(
-            view_manager.get_storage(), load_wifi_ssid(view_manager), password
+            view_manager.storage, load_wifi_ssid(view_manager), password
         ):
-            print("Failed to save WiFi settings")
+            view_manager.alert("Failed to save WiFi settings")
         keyboard.reset()
         _password_is_running = False
         view_manager.back()
@@ -96,7 +96,9 @@ def run(view_manager) -> None:
         keyboard.run(force=True)
         _keyboard_started = True
     else:
-        keyboard.run()
+        if not keyboard.run():
+            input_manager.reset()
+            view_manager.back()
 
 
 def stop(view_manager) -> None:
@@ -110,5 +112,6 @@ def stop(view_manager) -> None:
     _password_is_running = False
     _password_save_requested = False
     _back_hit = False
+    view_manager.keyboard.reset()
 
     collect()

@@ -5,12 +5,16 @@
 
 **Universal Method**
 1. Download the appropiate build from the `builds` directory.
-2. Press and hold the `BOOT` button on your device for 2 seconds.
-3. While holding the `BOOT` button, connect the device to your computer using a USB cable.
-4. Drag and drop the downloaded file onto the device. It will automatically reboot and begin running Picoware.
+2. Press and hold the `BOOT` button on your Raspberry Pi Pico/W or Pico 2/2W.
+3. While holding the `BOOT` button, connect the Pico to your computer using a USB cable (that supports data transfer) until your computer recognizes a new storage device.
+4. Drag and drop the downloaded file onto the device that appears (it should be named `RPI-RP2` if using a Raspberry Pi Pico/W or `RP2350` if using a Raspberry Pi Pico 2/2W). 
+5. Once the file transfer is complete, the Pico will eject itself. Disconnect the USB cable from your Pico.
 
 > [!NOTE]
 > If you are installing the MicroPython version, copy the `apps` folder from `builds/MicroPython` to the `picoware` folder on your SD card. If there is no `picoware` folder, create one.
+
+> [!NOTE]
+> If you are installing the CircuitPython version, after installing Picoware, replace the `code.py` file on your Pico with the one from `src/CircuitPython`. Then, copy the `apps` folder from `builds/CircuitPython` to the `picoware` folder on your SD card. If there is no `picoware` folder, create one.
 
 **Video Game Module (Only)**
 1. Install the Video Game Module Tool app on your Flipper Zero from the Apps catalog: [Video Game Module Tool](https://lab.flipper.net/apps/video_game_module_tool).
