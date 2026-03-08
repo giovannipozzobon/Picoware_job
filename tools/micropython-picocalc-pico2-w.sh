@@ -15,11 +15,17 @@ echo "Cleaning existing MicroPython Picoware modules..."
 rm -rf "$micropython_dir"/modules/main.py
 rm -rf "$micropython_dir"/modules/picoware
 
+# remove existing picoware_boards directory if it exists
+rm -rf "$micropython_dir"/modules/picoware_boards
+
 # remove existing PicoCalc modules directory if it exists
 rm -rf "$micropython_dir"/modules/PicoCalc # delete entire PicoCalc directory
 
 # remove existing Waveshare modules directory if it exists
 rm -rf "$micropython_dir"/modules/Waveshare
+
+# remove existing sd module if it exists
+rm -rf "$micropython_dir"/modules/sd
 
 # remove auto complete module if it exists
 rm -rf "$micropython_dir"/modules/auto_complete
@@ -32,6 +38,21 @@ rm -rf "$micropython_dir"/modules/response
 
 # remove font module if it exists
 rm -rf "$micropython_dir"/modules/font
+
+# remove lcd module if it exists
+rm -rf "$micropython_dir"/modules/lcd
+
+# remove JPEGDEC module if it exists
+rm -rf "$micropython_dir"/modules/JPEGDEC
+
+# remove jpeg module if it exists
+rm -rf "$micropython_dir"/modules/jpeg
+
+# remove vt module if it exists
+rm -rf "$micropython_dir"/modules/vt
+
+# remove engine module if it exists
+rm -rf "$micropython_dir"/modules/engine
 
 # Clean previous builds
 echo "Cleaning previous builds..."
@@ -49,13 +70,17 @@ mkdir -p "$micropython_dir"/modules/PicoCalc
 
 # copy picoware modules file to micropython modules directory
 cp "$picoware_dir"/src/MicroPython/PicoCalc/picoware_modules.cmake "$micropython_dir"/modules/PicoCalc/picoware_modules.cmake
-cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_boards "$micropython_dir"/modules/PicoCalc/picoware_boards
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_game "$micropython_dir"/modules/PicoCalc/picoware_game
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_keyboard "$micropython_dir"/modules/PicoCalc/picoware_keyboard
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_lcd "$micropython_dir"/modules/PicoCalc/picoware_lcd
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_psram "$micropython_dir"/modules/PicoCalc/picoware_psram
-cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_sd "$micropython_dir"/modules/PicoCalc/picoware_sd
 cp -r "$picoware_dir"/src/MicroPython/PicoCalc/picoware_lvgl "$micropython_dir"/modules/PicoCalc/picoware_lvgl
+
+# copy sd module
+cp -r "$picoware_dir"/src/MicroPython/sd "$micropython_dir"/modules/sd
+
+# copy picoware_boards module
+cp -r "$picoware_dir"/src/MicroPython/picoware_boards "$micropython_dir"/modules/picoware_boards
 
 # copy auto complete module
 cp -r "$picoware_dir"/src/MicroPython/auto_complete "$micropython_dir"/modules/auto_complete
@@ -69,12 +94,33 @@ cp -r "$picoware_dir"/src/MicroPython/response "$micropython_dir"/modules/respon
 # copy font module
 cp -r "$picoware_dir"/src/MicroPython/font "$micropython_dir"/modules/font
 
+# copy lcd module
+cp -r "$picoware_dir"/src/MicroPython/lcd "$micropython_dir"/modules/lcd
+
+# ensure JPEGDEC is installed
+if [ ! -d "$picoware_dir"/src/MicroPython/JPEGDEC ]; then
+    cd "$micropython_dir"/modules
+    git clone https://github.com/bitbank2/JPEGDEC.git
+fi
+
+# copy JPEGDEC module
+cp -r "$picoware_dir"/src/MicroPython/JPEGDEC "$micropython_dir"/modules/JPEGDEC
+
+# copy jpeg module
+cp -r "$picoware_dir"/src/MicroPython/jpeg "$micropython_dir"/modules/jpeg
+
+# copy vt module
+cp -r "$picoware_dir"/src/MicroPython/vt "$micropython_dir"/modules/vt
+
+# copy engine module
+cp -r "$picoware_dir"/src/MicroPython/engine "$micropython_dir"/modules/engine
+
 echo "Starting PicoCalc build process..."
 
 # move to the micropython rp2 port directory
 cd "$micropython_dir"
 
 # PicoCalc - Pico 2W 
-make -j BOARD=RPI_PICO2_W USER_C_MODULES="$micropython_dir"/modules/PicoCalc/picoware_modules.cmake
+make -j BOARD=RPI_PICO2_W USER_C_MODULES="$micropython_dir"/modules/PicoCalc/picoware_modules.cmake CFLAGS_EXTRA="-DPICOCALC"
 cp "$micropython_dir"/build-RPI_PICO2_W/firmware.uf2 "$picoware_dir"/builds/MicroPython/Picoware-PicoCalcPico2W.uf2
 echo "PicoCalc - Pico 2W build complete."
